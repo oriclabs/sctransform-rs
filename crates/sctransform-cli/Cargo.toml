@@ -1,0 +1,17 @@
+[package]
+name = "sctransform-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Standalone GPL-3 SCTransform process provider"
+
+[[bin]]
+name = "bl-sctransform-gpl"
+path = "src/main.rs"
+
+[dependencies]
+sctransform-core = { path = "../sctransform-core" }
+

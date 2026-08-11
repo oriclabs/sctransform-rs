@@ -1,0 +1,12 @@
+[package]
+name = "sctransform-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "GPL-3 Rust core for SCTransform-compatible normalization"
+
+[dependencies]
+
