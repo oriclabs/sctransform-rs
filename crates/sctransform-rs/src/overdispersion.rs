@@ -252,6 +252,112 @@ pub fn conventional_score(
     ll_part - digamma_term + cr_term * theta
 }
 
+/// One gene's offset-model fit: what `fit_glmGamPoi_offset` reports.
+#[derive(Debug, Clone, Copy)]
+pub struct OffsetFit {
+    /// `1 / overdispersion`, infinite when none was detected.
+    pub theta: f64,
+    /// The intercept, on the natural-log scale.
+    pub intercept: f64,
+}
+
+/// `glm_gp(design = ~1, offset = log(total_umi), size_factors = FALSE)`, for
+/// one gene.
+///
+/// The three stages are upstream's and must run in this order, because each
+/// one's output is the next one's input: a moment estimate of the dispersion,
+/// a Newton-Raphson fit of the intercept holding that dispersion fixed, and
+/// the Cox-Reid MLE of the overdispersion holding the resulting mu fixed.
+///
+/// The intercept returned here is the *first* one. `glm_gp` fits beta again
+/// after shrinking the dispersions and returns that second fit, so this is not
+/// yet the intercept sctransform records -- but it is exactly the intercept
+/// that defines the mu the overdispersion was estimated from, which is the
+/// number this stage exists to get right.
+///
+/// `counts` is sparse: `(cell, count)` for the non-zeros only. `cell_totals`
+/// is dense and gives the offset for every cell, zeros included.
+pub fn fit_offset_model(counts: &[(usize, f64)], cell_totals: &[f64]) -> OffsetFit {
+    let n_cells = cell_totals.len();
+    if n_cells == 0 || counts.is_empty() {
+        return OffsetFit {
+            theta: f64::INFINITY,
+            intercept: f64::NEG_INFINITY,
+        };
+    }
+
+    // `estimate_dispersions_by_moment`: (rowVars(Y) - bm/mean(colSums)) / bm^2,
+    // negatives and NaNs floored to zero by `estimate_dispersions_roughly`.
+    let mut sum = 0.0;
+    let mut sum_squares = 0.0;
+    for &(_, count) in counts {
+        sum += count;
+        sum_squares += count * count;
+    }
+    let cells = n_cells as f64;
+    let bm = sum / cells;
+    let bv = if n_cells > 1 {
+        (sum_squares - cells * bm * bm) / (cells - 1.0)
+    } else {
+        0.0
+    };
+    let mean_total = cell_totals.iter().sum::<f64>() / cells;
+    let moment = (bv - bm / mean_total) / (bm * bm);
+    let dispersion_init = if moment.is_finite() && moment > 0.0 {
+        moment
+    } else {
+        0.0
+    };
+
+    // `estimate_betas_roughly_group_wise`: log(mean(Y / exp(offset))).
+    let offsets: Vec<f64> = cell_totals.iter().map(|total| total.ln()).collect();
+    let normalised: f64 = counts
+        .iter()
+        .map(|&(cell, count)| count / cell_totals[cell])
+        .sum::<f64>()
+        / cells;
+    let mut beta = normalised.ln();
+    if !beta.is_finite() {
+        return OffsetFit {
+            theta: f64::INFINITY,
+            intercept: f64::NEG_INFINITY,
+        };
+    }
+
+    // `fitBeta_one_group`: Newton-Raphson, tolerance 1e-8, at most 100 steps.
+    // The zero cells cannot be skipped -- they contribute `-mu / (1 + mu
+    // theta)` to the score, which is most of it for a sparse gene.
+    let mut dense = vec![0.0f64; n_cells];
+    for &(cell, count) in counts {
+        dense[cell] = count;
+    }
+    for _ in 0..100 {
+        let mut dl = 0.0;
+        let mut ddl = 0.0;
+        for (cell, &offset) in offsets.iter().enumerate() {
+            let count = dense[cell];
+            let mu = (beta + offset).exp();
+            let denominator = 1.0 + mu * dispersion_init;
+            dl += (count - mu) / denominator;
+            ddl += mu * (1.0 + count * dispersion_init) / denominator / denominator;
+        }
+        let step = dl / ddl;
+        beta += step;
+        if step.abs() < 1e-8 || beta.is_nan() {
+            break;
+        }
+    }
+    beta = beta.max(-1e8);
+
+    let mu: Vec<f64> = offsets.iter().map(|offset| (beta + offset).exp()).collect();
+    let estimate = conventional_overdispersion_mle(&dense, &mu, true);
+
+    OffsetFit {
+        theta: estimate.theta(),
+        intercept: beta,
+    }
+}
+
 /// The objective at `log_theta`, prepared exactly as the estimator prepares it.
 ///
 /// Callers comparing two estimates must evaluate them on the same function, and

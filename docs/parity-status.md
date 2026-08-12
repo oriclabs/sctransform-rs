@@ -72,7 +72,7 @@ in raw theta becomes 6.5% after regularization because `d ln(theta)/d od` is
 about -25 at these UMI values, so the od-factor inversion amplifies it roughly
 fivefold.
 
-## Step 2 — the estimator (estimator done, not yet wired in)
+## Step 2 — the estimator (done, wired in)
 
 **Median relative theta error against glmGamPoi: 1.3e-2 → 1.3e-10.** Measured
 on 300 genes sampled evenly across the expression range, handed the exact
@@ -111,10 +111,49 @@ inputs the reference never optimised over.
 `validation/export_overdispersion_fixture.R` walks the stages explicitly and
 asserts the walk reproduces `glm_gp`'s own output.
 
-Still to do in this step: the beta stage (`estimate_betas_group_wise`), and
-wiring the estimator into `sctransform()` in place of the existing Cox-Reid
-fit. Until that happens the pipeline numbers are unchanged -- this milestone is
-the estimator in isolation, not the pipeline.
+### Wired into the pipeline
+
+The beta stage (`estimate_dispersions_by_moment`,
+`estimate_betas_roughly_group_wise`, `fitBeta_one_group`) is ported too, and
+`sctransform()` now fits through this chain rather than the crate's own
+Cox-Reid fit, which has been deleted.
+
+| Measurement | baseline | after step 1 | after step 2 |
+|---|---:|---:|---:|
+| Fit-gene overlap | 91.550% | 100.000% | 100.000% |
+| **Unregularized theta rel. error, median** | **1.258%** | 1.323% | **5.6e-9%** |
+| Unregularized theta rel. error, p90 | 6.925% | 7.120% | 9.1e-6% |
+| Unregularized theta, port / oracle | — | — | 1.000000000046 |
+| Median *regularized* theta rel. error | 6.304% | 6.489% | 6.709% |
+| od-factor median absolute difference | 0.002784 | 0.002962 | 0.002980 |
+| Intercept slope | 0.978152 | 0.978716 | 0.981348 |
+| Top-3,000 feature overlap | 98.500% | 98.433% | 98.733% |
+| Feature-rank Spearman | 0.999867 | 0.999870 | 0.999886 |
+| Transform time | 2.95 s | 2.78 s | 2.04 s |
+
+One gate flipped to passing (`intercept_slope_0_98_to_1_02`), leaving four.
+
+## What this proves about the rest
+
+The raw estimator now agrees with glmGamPoi to eleven figures **and the
+regularized theta did not move**. Those two facts together are the point of
+this step. The remaining 6.7% is not an estimator difference, not a gene-sample
+difference, and not a beta difference -- all three of those are now measured at
+or near machine precision. It is entirely in the regularization stage, and the
+od-factor difference of 0.00298 is where it lives.
+
+That difference is small in its own units and large after inversion:
+`d ln(theta) / d od` is about -25 at these UMI values, so 0.003 in od becomes
+roughly 7% in theta. Nothing downstream of the regularizer can be improved
+without fixing the regularizer first.
+
+## Step 3 — regularization (next, and now the only thing left)
+
+R's `ksmooth` over the od-factor scale, with the Sheather-Jones bandwidth and
+`bw_adjust = 3`, plus the `min_variance = umi_median` floor and the
+`exclude_poisson` handling around it. Previously this could not be attributed;
+it now carries all of the remaining error and is measurable on its own, because
+its input matches the reference to eleven digits.
 
 ### Licensing, which changed under us
 
@@ -125,12 +164,6 @@ carries an in-file notice marking it LGPL (>= 3) and attributing it to DESeq2,
 and the relicensing commit did not touch it. This port treats that file as
 LGPL-3 and conveys it under GPL-3, which LGPL-3 section 2 permits.
 `beta_estimation.cpp` carries no such notice and is MIT at HEAD.
-
-## Step 3 — regularization (not started)
-
-R's `ksmooth` with the Sheather-Jones bandwidth and `bw_adjust = 3`, over the
-od-factor scale. Only measurable once step 2 lands, since the amplification
-makes it impossible to attribute error between the two before then.
 
 Residual generation, clipping, residual variance and feature ranking need no
 work: they already pass every gate they are measured against.
