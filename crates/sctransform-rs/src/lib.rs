@@ -6,10 +6,12 @@
 // Software Foundation, version 3 only.
 
 mod bandwidth;
+mod outlier;
 mod overdispersion;
 mod sctransform;
 
 pub use bandwidth::bw_sj;
+pub use outlier::is_outlier;
 pub use overdispersion::{
     conventional_loglikelihood, conventional_overdispersion_mle, conventional_score, objective_at,
     OverdispersionEstimate,

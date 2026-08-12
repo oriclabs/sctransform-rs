@@ -252,23 +252,66 @@ reason is that nearly all of those genes are sparse enough to fall under
 model regardless. Kept because it is what upstream does and it will matter on a
 dataset whose sparse tail is not also low-mean.
 
-### Still to do in step 3
+### `is_outlier` (fixed, and it was the whole thing)
 
-Three of the four suspected causes are now fixed and the od-factor difference
-is essentially where it started, so the remaining two carry all of it:
+**18 genes out of 2,000. Failing gates 5 → 1.**
 
-- `is_outlier`: two bin grids offset by half a bin width, `robust_scale` per
-  bin as `(y - median) / (mad + eps)` with `mad`'s 1.4826 constant, threshold
-  10 on the smaller absolute score. **18 genes.**
+| Measurement | baseline | after step 2 | + bw.SJ | **+ outliers** |
+|---|---:|---:|---:|---:|
+| Median regularized theta rel. error | 6.304% | 6.709% | 6.496% | **1.713%** |
+| P90 regularized theta rel. error | 15.819% | 14.540% | 14.407% | **3.749%** |
+| Regularized theta slope | 0.960418 | 0.950720 | 0.947264 | **1.001363** |
+| od-factor median absolute difference | 0.002784 | 0.002980 | 0.002822 | **0.000633** |
+| od-factor p90 absolute difference | 0.008159 | 0.006879 | 0.006756 | **0.001739** |
+| Intercept RMSE | 0.138172 | 0.135231 | 0.031658 | **0.027880** |
+| Residual-variance slope | 1.016104 | 1.005547 | 0.993662 | **1.005992** |
+| Top-3,000 feature overlap | 98.500% | 98.733% | 98.467% | **99.333%** |
+| Feature-rank Spearman | 0.999867 | 0.999886 | 0.999891 | **0.999967** |
+| Residual RMSE / R residual SD | 1.476% | 1.599% | 1.618% | **0.648%** |
+| Residual slope | 0.995809 | 0.991258 | 0.988937 | **0.999624** |
+
+Three theta gates flipped to passing at once, including the slope, which had
+been failing since the beginning.
+
+The arithmetic that made this predictable was in the previous section: 18 genes
+in 1,712 is one percent of the fit set, but outliers are *by construction* the
+extreme values, and a kernel smoother is a local average. A single extreme
+point inside a bandwidth of 0.55 drags the curve wherever it sits, and the
+od-factor inversion then multiplies that by about 25.
+
+Three details were load-bearing and none is obvious from the formula:
+
+- The score is computed on **two** bin grids offset by half a bin width, and
+  the *smaller* absolute score wins. A gene must look extreme under both
+  griddings, which is what stops an awkwardly placed bin boundary inventing
+  outliers.
+- Scoring happens on the **full** step-one set, before any filtering, with an
+  infinite theta contributing an od-factor of exactly zero.
+- R's `seq` counts breaks as `as.integer((to - from)/by + 1e-10)` and clamps the
+  last one. Accumulating `by` in a loop instead drops a whole bin whenever the
+  division lands just below an integer -- `seq(0, 0.6, by = 0.2)` is exactly
+  that case -- and bins are what the scores are computed within.
+
+### The one remaining gate
+
+`theta_bias_attenuated_below_0_25` fails at 1.565, and it is measuring a ratio
+whose denominator collapsed. Theta error on the probe genes is now 0.309% and
+per-gene residual error is 0.484%, so the ratio exceeds one by construction.
+The gate was calibrated when theta error was five to seven percent; at 0.3% it
+no longer tests anything. Every absolute residual measure improved: RMSE over
+oracle SD 0.648%, slope 0.999624, Pearson 0.99998, worst per-gene correlation
+0.99993.
+
+Recalibrating it is a judgement call rather than a fix, so it is left failing
+and documented rather than quietly adjusted.
+
+### Still open
+
 - The **21 genes** where R's estimator returns infinite theta and this one
   returns a finite value -- a boundary-condition difference in the MLE's early
-  exits, not in the objective, since the objective is verified to 1.06e-11.
-
-39 genes out of 1,712 is 2.3% of the fit set, which sounds too small to explain
-a 0.0028 od-factor difference until you notice what they are: outliers are by
-construction the extreme values, and a kernel smoother with a bandwidth of 0.55
-in a range of about five is a local average. A handful of extreme points in the
-wrong place moves the curve where they sit.
+  exits, not in the objective, which is verified to 1.06e-11.
+- Residual error is now 0.648% of the oracle's SD, from 1.476%. Whatever is
+  left is below the level at which the current probes can attribute it.
 
 ### Licensing, which changed under us
 

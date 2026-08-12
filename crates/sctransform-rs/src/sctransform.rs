@@ -1141,10 +1141,44 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
     // than pinned to a ceiling: an arbitrary large value is not an observation,
     // and letting a run of them into the smoother bends the curve toward a
     // number nobody measured.
+    //
+    // Upstream additionally drops outliers, and it scores them on the *full*
+    // step-one set before any filtering -- so the scoring vectors below are
+    // built over every fit gene, with an infinite theta contributing an
+    // od-factor of exactly zero, which is what `log10(1 + gmean/Inf)` gives.
+    // `reg_model_pars` scores every column of `model_pars` and takes `any`; the
+    // third column, `log_umi`, is `log(10)` for every gene, so its spread is
+    // zero and it can never flag anything.
+    let step1_x: Vec<f64> = fit_genes.iter().map(|&gene| log_means[gene]).collect();
+    let step1_dispersion: Vec<f64> = fit_genes
+        .iter()
+        .zip(&fitted)
+        .map(|(&gene, &(theta, _))| match theta {
+            Some(value) => theta_to_log10_od_factor(log_means[gene], value),
+            None => 0.0,
+        })
+        .collect();
+    let step1_intercept: Vec<f64> = fitted.iter().map(|&(_, intercept)| intercept).collect();
+    let outlier_flags: Vec<bool> = {
+        let by_dispersion = crate::outlier::is_outlier(&step1_dispersion, &step1_x, 10.0);
+        let by_intercept = crate::outlier::is_outlier(&step1_intercept, &step1_x, 10.0);
+        by_dispersion
+            .iter()
+            .zip(&by_intercept)
+            .map(|(a, b)| *a || *b)
+            .collect()
+    };
+    let is_outlier_gene: std::collections::HashSet<usize> = fit_genes
+        .iter()
+        .zip(&outlier_flags)
+        .filter(|(_, &flagged)| flagged)
+        .map(|(&gene, _)| gene)
+        .collect();
+
     let observations: Vec<(f64, f64)> = fit_genes
         .iter()
         .zip(&fitted)
-        .filter(|(gene, _)| !regularization_poisson[**gene])
+        .filter(|(gene, _)| !regularization_poisson[**gene] && !is_outlier_gene.contains(*gene))
         .filter_map(|(&gene, &(theta, _))| {
             theta.map(|value| {
                 (
@@ -1158,7 +1192,9 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
     let intercept_observations: Vec<(f64, f64)> = fit_genes
         .iter()
         .zip(&fitted)
-        .filter(|(gene, (theta, _))| !regularization_poisson[**gene] && theta.is_some())
+        .filter(|(gene, (theta, _))| {
+            !regularization_poisson[**gene] && theta.is_some() && !is_outlier_gene.contains(*gene)
+        })
         .map(|(&gene, &(_, intercept))| (log_means[gene], intercept))
         .collect();
 
