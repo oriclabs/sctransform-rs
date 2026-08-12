@@ -1,5 +1,5 @@
 [package]
-name = "sctransform-cli"
+name = "sctransform-rs-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,11 +7,14 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 description = "Standalone GPL-3 SCTransform process provider"
+publish = false
 
+# The binary keeps its own name. `-gpl` is load-bearing: a methods section must
+# not be able to confuse this engine with BioLang's MIT built-in one.
 [[bin]]
 name = "bl-sctransform-gpl"
 path = "src/main.rs"
 
 [dependencies]
-sctransform-core = { path = "../sctransform-core" }
+sctransform-rs = { path = "../sctransform-rs" }
 

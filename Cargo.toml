@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/sctransform-core",
-    "crates/sctransform-cli",
+    "crates/sctransform-rs",
+    "crates/sctransform-rs-cli",
 ]
 resolver = "2"
 

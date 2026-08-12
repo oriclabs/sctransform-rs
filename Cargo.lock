@@ -3,12 +3,12 @@
 version = 3
 
 [[package]]
-name = "sctransform-cli"
+name = "sctransform-rs"
 version = "0.1.0"
-dependencies = [
- "sctransform-core",
-]
 
 [[package]]
-name = "sctransform-core"
+name = "sctransform-rs-cli"
 version = "0.1.0"
+dependencies = [
+ "sctransform-rs",
+]

@@ -1,0 +1,16 @@
+[package]
+name = "sctransform-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "GPL-3 Rust port of SCTransform-compatible normalization"
+# crates.io names cannot be reclaimed, and this name sits next to the upstream
+# R package's. Publishing is a deliberate decision, not an accident of `cargo
+# publish` from the workspace root.
+publish = false
+
+[dependencies]
+

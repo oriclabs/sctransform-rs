@@ -5,7 +5,7 @@
 // under the terms of the GNU General Public License as published by the Free
 // Software Foundation, version 3 only.
 
-use sctransform_core::{sctransform, GeneColumns, SctOptions};
+use sctransform_rs::{sctransform, GeneColumns, SctOptions};
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
@@ -311,7 +311,7 @@ fn write_outputs(
     arguments: &RunArguments,
     input: &MexInput,
     options: &SctOptions,
-    result: &sctransform_core::SctResult,
+    result: &sctransform_rs::SctResult,
     elapsed: f64,
 ) -> Result<(), String> {
     let output = &arguments.output;
@@ -431,7 +431,7 @@ fn write_outputs(
 fn write_residual_matrix(
     path: PathBuf,
     input: &MexInput,
-    result: &sctransform_core::SctResult,
+    result: &sctransform_rs::SctResult,
 ) -> Result<(), String> {
     let mut output = writer(path)?;
     let genes = result.kept_genes.len();
