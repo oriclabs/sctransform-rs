@@ -41,12 +41,16 @@ rownames(umi) <- make.unique(as.character(features[[min(2L, ncol(features))]]))
 colnames(umi) <- as.character(barcodes[[1L]])
 umi <- as(umi, "dgCMatrix")
 
-# The offset is a property of the whole matrix, so it must be computed before
-# any gene subsetting or the mu values would not be the pipeline's.
+# The offset must be computed before the min_cells gene filter, not after.
+# `vst` builds `cell_attr` at line 62 of its body and only drops genes at line
+# 70, so its `log_umi` is a column sum over every input gene. Computing it on
+# the filtered matrix instead gives a fixture that is self-consistent -- a port
+# fed the same wrong totals will agree with it perfectly -- while not being the
+# pipeline's inputs, which is the failure mode a fixture exists to prevent.
 min_cells <- 5L
-umi <- umi[Matrix::rowSums(umi > 0) >= min_cells, , drop = FALSE]
 cell_totals <- Matrix::colSums(umi)
 log_umi <- log(cell_totals)
+umi <- umi[Matrix::rowSums(umi > 0) >= min_cells, , drop = FALSE]
 
 row_gmean <- getFromNamespace("row_gmean", "sctransform")
 log_gmean <- log10(row_gmean(umi, eps = 1))

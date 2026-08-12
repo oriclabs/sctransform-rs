@@ -310,7 +310,24 @@ pub fn fit_offset_model(counts: &[(usize, f64)], cell_totals: &[f64]) -> OffsetF
     };
 
     // `estimate_betas_roughly_group_wise`: log(mean(Y / exp(offset))).
-    let offsets: Vec<f64> = cell_totals.iter().map(|total| total.ln()).collect();
+    //
+    // The offset is `log(10^log10(total))`, not `log(total)`. That round trip
+    // is upstream's: `make_cell_attr` stores `log_umi` as a base-10 logarithm
+    // and `fit_glmGamPoi_offset` converts it back with
+    // `log_umi <- log(10^log10_umi)`. It is not an identity in floating point,
+    // and on the HBC control it changes the offset for 3,847 of 14,847 cells,
+    // 25.9%, moving mu by up to 1.8e-15 relative.
+    //
+    // This is here because it is what upstream computes, and for no other
+    // reason. It was written expecting it to explain the 21 genes where R
+    // reports an infinite theta and this port reports a large finite one --
+    // those are decided by a sign test on a cancellation, so a 1e-15 shift in
+    // mu could plausibly flip them. It does not: the count stayed at 21 and no
+    // measured quantity moved at all. The cause is still open.
+    let offsets: Vec<f64> = cell_totals
+        .iter()
+        .map(|total| 10f64.powf(total.log10()).ln())
+        .collect();
     let normalised: f64 = counts
         .iter()
         .map(|&(cell, count)| count / cell_totals[cell])

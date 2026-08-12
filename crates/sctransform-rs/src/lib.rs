@@ -13,8 +13,8 @@ mod sctransform;
 pub use bandwidth::bw_sj;
 pub use outlier::is_outlier;
 pub use overdispersion::{
-    conventional_loglikelihood, conventional_overdispersion_mle, conventional_score, objective_at,
-    OverdispersionEstimate,
+    conventional_loglikelihood, conventional_overdispersion_mle, conventional_score,
+    fit_offset_model, objective_at, OffsetFit, OverdispersionEstimate,
 };
 pub use sctransform::{sctransform, GeneColumns, SctOptions, SctResult};
 

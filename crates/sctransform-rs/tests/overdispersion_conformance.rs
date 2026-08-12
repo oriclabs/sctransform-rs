@@ -170,3 +170,83 @@ fn overdispersion_matches_glmgampoi() {
         offenders.join("\n  ")
     );
 }
+
+/// The beta stage, against the intercept glmGamPoi actually optimised from.
+///
+/// This is separated from the estimator test above because they fail for
+/// different reasons. The estimator is scored on inputs taken from R; this is
+/// scored on inputs the port derives itself, so it is the one that catches a
+/// wrong moment estimate or a Newton loop that stops in a different place.
+///
+/// It matters more than its size suggests. A gene with no real overdispersion
+/// sits where the score at the far-left probe is a cancellation of two
+/// quantities each around `sum(y)`, so a small change in mu flips the sign and
+/// with it the difference between a finite theta and an infinite one.
+#[test]
+fn the_beta_stage_matches_glmgampoi() {
+    let Ok(directory) = std::env::var("SCTRANSFORM_OD_FIXTURE") else {
+        eprintln!("skipped: SCTRANSFORM_OD_FIXTURE is not set");
+        return;
+    };
+    let directory = PathBuf::from(directory);
+
+    let cells = rows(&directory.join("cells.csv"));
+    let totals: Vec<f64> = cells
+        .iter()
+        .map(|row| row[2].parse().expect("total_umi"))
+        .collect();
+
+    let genes = rows(&directory.join("genes.csv"));
+    let mut sparse: Vec<Vec<(usize, f64)>> = vec![Vec::new(); genes.len()];
+    for row in rows(&directory.join("counts.csv")) {
+        let gene: usize = row[0].parse().expect("gene_row");
+        let cell: usize = row[1].parse().expect("cell_col");
+        sparse[gene].push((cell, row[2].parse().expect("count")));
+    }
+    for column in &mut sparse {
+        column.sort_by_key(|&(cell, _)| cell);
+    }
+
+    let mut intercept_error: Vec<f64> = Vec::new();
+    let mut regime_disagreements: Vec<String> = Vec::new();
+
+    for (index, row) in genes.iter().enumerate() {
+        let name = &row[0];
+        let expected_intercept: f64 = row[4].parse().expect("mle_intercept");
+        let expected_theta: f64 = if row[2].to_lowercase().starts_with("inf") {
+            f64::INFINITY
+        } else {
+            row[2].parse().expect("theta")
+        };
+
+        let fit = sctransform_rs::fit_offset_model(&sparse[index], &totals);
+        intercept_error.push((fit.intercept - expected_intercept).abs() / expected_intercept.abs());
+        if fit.theta.is_infinite() != expected_theta.is_infinite() {
+            regime_disagreements.push(format!(
+                "{name}: theta {:.6e} vs glmGamPoi {:.6e}",
+                fit.theta, expected_theta
+            ));
+        }
+    }
+
+    intercept_error.sort_by(f64::total_cmp);
+    let n = intercept_error.len();
+    eprintln!(
+        "beta stage over {n} genes: intercept relative error median {:.3e}, max {:.3e}",
+        intercept_error[n / 2],
+        intercept_error[n - 1]
+    );
+    eprintln!(
+        "genes whose overdispersion regime disagrees end to end: {}",
+        regime_disagreements.len()
+    );
+    for line in regime_disagreements.iter().take(8) {
+        eprintln!("  {line}");
+    }
+
+    assert!(
+        intercept_error[n / 2] < 1e-10,
+        "median intercept relative error {:e}",
+        intercept_error[n / 2]
+    );
+}

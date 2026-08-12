@@ -305,13 +305,48 @@ oracle SD 0.648%, slope 0.999624, Pearson 0.99998, worst per-gene correlation
 Recalibrating it is a judgement call rather than a fix, so it is left failing
 and documented rather than quietly adjusted.
 
-### Still open
+### Still open: 21 genes, cause not yet found
 
-- The **21 genes** where R's estimator returns infinite theta and this one
-  returns a finite value -- a boundary-condition difference in the MLE's early
-  exits, not in the objective, which is verified to 1.06e-11.
-- Residual error is now 0.648% of the oracle's SD, from 1.476%. Whatever is
-  left is below the level at which the current probes can attribute it.
+R reports an infinite theta for 241 step-one genes and this port for 220. The
+21 differences all sit between theta 1e5 and 1e7 -- genes with no real
+overdispersion, where R's estimator returns exactly zero and this one finds a
+very large finite value.
+
+The estimator is not the cause, and neither is the beta stage. Both were
+measured against glmGamPoi on 300 genes spanning the expression range:
+
+| | |
+|---|---:|
+| Beta-stage intercept, median relative error | **0.000e0** (bit-identical) |
+| Beta-stage intercept, max relative error | 2.6e-16 |
+| Genes whose overdispersion regime disagrees | **0 of 300** |
+
+Given identical inputs the two implementations classify every gene identically.
+So the difference is in what the pipeline feeds them, which differs from the
+fixture in one way: the pipeline fits on a 5,000-cell subsample.
+
+One candidate was tested and ruled out. `fit_glmGamPoi_offset` computes its
+offset as `log(10^log10_umi)`, a round trip through base 10 that is not an
+identity in floating point -- it changes 3,847 of 14,847 cell offsets, 25.9%,
+moving mu by up to 1.8e-15. Since these genes are classified by the sign of a
+cancellation between two quantities each of size `sum(y)`, that looked like
+enough to flip them. The port now performs the same round trip, because it is
+what upstream computes, and it changed nothing: still 21, with no measured
+quantity moving at all.
+
+The next candidate is `estimate_dispersions_by_moment`, which calls R's
+`rowVars`. R computes the variance in two passes; this port uses the
+algebraically equivalent one-pass form. That value is not merely a starting
+point -- the negative-binomial intercept depends on the dispersion held fixed
+during its Newton iteration, so a different moment estimate gives a genuinely
+different beta and mu.
+
+### Where this leaves the port
+
+Residual error is 0.648% of the oracle's SD, from 1.476% at the start. One gate
+fails and it is the miscalibrated ratio described above. Whatever remains is
+below the level at which the current probes can attribute it, and the 21 genes
+are the only concrete unexplained difference left.
 
 ### Licensing, which changed under us
 
