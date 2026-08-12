@@ -72,15 +72,59 @@ in raw theta becomes 6.5% after regularization because `d ln(theta)/d od` is
 about -25 at these UMI values, so the od-factor inversion amplifies it roughly
 fivefold.
 
-## Step 2 — the estimator (not started)
+## Step 2 — the estimator (estimator done, not yet wired in)
 
-Port glmGamPoi's offset-model overdispersion estimator. GPL-3, so permitted in
-this repository. This is the substantial one: a C++ IRLS fitter with its own
-moment initialisation, Cox-Reid adjustment and convergence policy, all of which
-must match, not merely converge to the same neighbourhood.
+**Median relative theta error against glmGamPoi: 1.3e-2 → 1.3e-10.** Measured
+on 300 genes sampled evenly across the expression range, handed the exact
+`(y, mu)` glmGamPoi optimised over.
 
-Target: `unregularized_theta_relative_error_median` below 1e-9, which should
-carry `theta_raw_*` and both intercept gates with it.
+| | value |
+|---|---:|
+| Genes with measurable overdispersion | 260 |
+| Genes both call unoverdispersed | 40 |
+| Median relative theta error | 1.255e-10 |
+| P90 | 2.367e-7 |
+| Max | 1.133e-5 |
+| Worst relative objective gap at the two estimates | 1.059e-11 |
+
+That last row is the one that carries the claim. Evaluated at either
+implementation's answer, the objective returns the same value to eleven
+figures, which a mistranscribed term could not do. What remains is not an
+estimator difference but a stopping rule: `nlminb` gets an analytic gradient
+and halts where that gradient is numerically zero.
+
+Two findings worth keeping.
+
+**The reference stops on the gradient, not the objective.** Polishing the
+score's root by golden-section maximisation of the loglikelihood is the obvious
+correction -- `nlminb` nominally minimises the objective -- and it made
+agreement four thousand times *worse*, median 1.3e-10 to 7.5e-7. Upstream's
+score carries clamps and Taylor brackets that make it a deliberately inexact
+derivative of its own loglikelihood, so the two have slightly different
+stationary points, and the reference sits at the gradient's. The polish was
+removed.
+
+**glm_gp's returned `Beta` is not the one the estimator used.** It fits beta,
+estimates overdispersion from that `Mu`, shrinks the dispersions, then fits
+beta again. Reconstructing mu from the returned `Beta` scores a port against
+inputs the reference never optimised over.
+`validation/export_overdispersion_fixture.R` walks the stages explicitly and
+asserts the walk reproduces `glm_gp`'s own output.
+
+Still to do in this step: the beta stage (`estimate_betas_group_wise`), and
+wiring the estimator into `sctransform()` in place of the existing Cox-Reid
+fit. Until that happens the pipeline numbers are unchanged -- this milestone is
+the estimator in isolation, not the pipeline.
+
+### Licensing, which changed under us
+
+glmGamPoi relicensed GPL-3 to MIT on 26 May 2026 (`a9eeed642`), and the four
+C++ files are byte-identical across that change. That would put the estimator
+within reach of MIT BioLang -- except that `src/overdispersion.cpp` still
+carries an in-file notice marking it LGPL (>= 3) and attributing it to DESeq2,
+and the relicensing commit did not touch it. This port treats that file as
+LGPL-3 and conveys it under GPL-3, which LGPL-3 section 2 permits.
+`beta_estimation.cpp` carries no such notice and is MIT at HEAD.
 
 ## Step 3 — regularization (not started)
 

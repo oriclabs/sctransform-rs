@@ -6,6 +6,20 @@ The SCTransform method and upstream implementation are authored by Christoph
 Hafemeister, Saket Choudhary, Rahul Satija, and contributors to
 `satijalab/sctransform`. The upstream R package is licensed GPL-3.
 
+The Cox-Reid adjusted overdispersion estimator is derived from glmGamPoi
+(<https://github.com/const-ae/glmGamPoi>), Copyright Constantin Ahlmann-Eltze.
+That package's `src/overdispersion.cpp` states that its likelihood, score and
+optimisation routines were originally taken from DESeq2's `src/DESeq2.cpp` by
+Michael I. Love, and marks them "License: LGPL (>= 3)".
+
+The glmGamPoi package relicensed from GPL-3 to MIT on 26 May 2026, in commit
+`a9eeed642`. That commit changed only `DESCRIPTION`, `LICENSE`, `LICENSE.md`
+and `.Rbuildignore`; the in-file LGPL notice on `src/overdispersion.cpp` and
+its attribution to DESeq2 were left in place, and the file's contents are
+byte-identical before and after. This port therefore treats that file as
+LGPL-3, not MIT. GNU LGPL version 3 section 2 permits conveying such a work
+under the GNU GPL version 3, which is what this repository does.
+
 The density binning and unequal-probability sampling compatibility work is
 derived from the R statistical computing environment, Copyright the R Core
 Team, the R Foundation, Robert Gentleman, Ross Ihaka, and Adrian Baddeley. The
