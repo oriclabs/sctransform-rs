@@ -5,9 +5,11 @@
 // under the terms of the GNU General Public License as published by the Free
 // Software Foundation, version 3 only.
 
+mod bandwidth;
 mod overdispersion;
 mod sctransform;
 
+pub use bandwidth::bw_sj;
 pub use overdispersion::{
     conventional_loglikelihood, conventional_overdispersion_mle, conventional_score, objective_at,
     OverdispersionEstimate,

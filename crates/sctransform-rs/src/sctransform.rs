@@ -482,6 +482,22 @@ fn kernel_smooth(points: &[(f64, f64)], at: f64, bandwidth: f64) -> f64 {
     }
 }
 
+/// The abscissa `reg_model_pars` evaluates the smoother at.
+///
+/// Upstream clamps to the range of the genes it fitted:
+/// `x_points <- pmin(pmax(genes_log_gmean, min(step1)), max(step1))`. Without
+/// it, a gene sparser than every fitted gene is smoothed at its own position,
+/// out in a tail where the kernel sees only the few nearest observations --
+/// upstream instead reads the curve at its endpoint, which is a flat
+/// extrapolation rather than a lopsided average.
+///
+/// On the HBC control this moves 1,025 of 13,799 genes, 7.43%, all from below,
+/// by a median of 0.12 in log10 geometric mean against a bandwidth of 0.55.
+#[inline]
+fn clamp_to_fitted_range(at: f64, low: f64, high: f64) -> f64 {
+    at.max(low).min(high)
+}
+
 /// Median of the non-zero UMI entries used by the v2 residual variance floor.
 ///
 /// UMI matrices are integer-valued, so a compact histogram avoids cloning the
@@ -923,114 +939,6 @@ impl RMersenneTwister {
     }
 }
 
-/// Sheather-Jones solve-the-equation bandwidth for a Gaussian kernel.
-///
-/// This follows the published 1991 plug-in equations directly. The fourth and
-/// sixth Gaussian-kernel derivatives estimate the two density functionals, and
-/// the final bandwidth is the positive root of the AMISE equation. Pair sums
-/// include the diagonal, as specified by the natural estimators; symmetry cuts
-/// their cost in half without binning or changing the answer.
-fn sheather_jones_bandwidth(values: &[f64], adjust: f64) -> f64 {
-    let n = values.len();
-    if n < 2 {
-        return 1.0;
-    }
-    let mean = values.iter().sum::<f64>() / n as f64;
-    let variance = values.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / (n - 1) as f64;
-    let sd = variance.max(0.0).sqrt();
-
-    let mut sorted: Vec<f64> = values.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let quantile = |q: f64| -> f64 {
-        let position = q * (n - 1) as f64;
-        let low = position.floor() as usize;
-        let high = position.ceil() as usize;
-        let fraction = position - low as f64;
-        sorted[low] * (1.0 - fraction) + sorted[high] * fraction
-    };
-    let iqr = quantile(0.75) - quantile(0.25);
-
-    // Robust normal-reference scale used for the two pilot bandwidths.
-    let spread = if iqr > 0.0 { sd.min(iqr / 1.349) } else { sd };
-    if spread <= 0.0 || !spread.is_finite() {
-        return 1.0;
-    }
-
-    const NORMALIZER: f64 = 0.398_942_280_401_432_7; // 1/sqrt(2*pi)
-    let functional = |bandwidth: f64, derivative: u8| -> f64 {
-        if bandwidth <= 0.0 || !bandwidth.is_finite() {
-            return f64::NAN;
-        }
-        let at_zero = if derivative == 4 { 3.0 } else { -15.0 } * NORMALIZER;
-        let mut total = n as f64 * at_zero;
-        for left in 0..n {
-            for right in left + 1..n {
-                let z = (values[left] - values[right]) / bandwidth;
-                let square = z * z;
-                let polynomial = if derivative == 4 {
-                    square * square - 6.0 * square + 3.0
-                } else {
-                    square * square * square - 15.0 * square * square + 45.0 * square - 15.0
-                };
-                total += 2.0 * polynomial * (-0.5 * square).exp() * NORMALIZER;
-            }
-        }
-        total / (n as f64 * (n - 1) as f64 * bandwidth.powi(if derivative == 4 { 5 } else { 7 }))
-    };
-
-    let count = n as f64;
-    let pilot_a = 1.24 * spread * count.powf(-1.0 / 7.0);
-    let pilot_b = 1.23 * spread * count.powf(-1.0 / 9.0);
-    let s_pilot = functional(pilot_a, 4);
-    let t_pilot = -functional(pilot_b, 6);
-    if s_pilot <= 0.0 || t_pilot <= 0.0 || !s_pilot.is_finite() || !t_pilot.is_finite() {
-        return (0.9 * spread * count.powf(-0.2) * adjust).max(f64::EPSILON);
-    }
-
-    let equation = |bandwidth: f64| -> f64 {
-        let alpha = 1.357 * (s_pilot / t_pilot).powf(1.0 / 7.0) * bandwidth.powf(5.0 / 7.0);
-        let s_alpha = functional(alpha, 4);
-        if s_alpha <= 0.0 || !s_alpha.is_finite() {
-            f64::NAN
-        } else {
-            (1.0 / (2.0 * std::f64::consts::PI.sqrt() * count * s_alpha)).powf(0.2) - bandwidth
-        }
-    };
-
-    let normal_reference = 1.06 * spread * count.powf(-0.2);
-    let mut low = normal_reference * 0.1;
-    let mut high = normal_reference * 10.0;
-    let mut low_value = equation(low);
-    let mut high_value = equation(high);
-    for _ in 0..20 {
-        if low_value.is_finite() && high_value.is_finite() && low_value >= 0.0 && high_value <= 0.0
-        {
-            break;
-        }
-        if !low_value.is_finite() || low_value < 0.0 {
-            low *= 0.5;
-            low_value = equation(low);
-        }
-        if !high_value.is_finite() || high_value > 0.0 {
-            high *= 2.0;
-            high_value = equation(high);
-        }
-    }
-    if !low_value.is_finite() || !high_value.is_finite() || low_value < 0.0 || high_value > 0.0 {
-        return (0.9 * spread * count.powf(-0.2) * adjust).max(f64::EPSILON);
-    }
-    for _ in 0..48 {
-        let middle = (low + high) * 0.5;
-        let value = equation(middle);
-        if !value.is_finite() || value <= 0.0 {
-            high = middle;
-        } else {
-            low = middle;
-        }
-    }
-    ((low + high) * 0.5 * adjust).max(f64::EPSILON)
-}
-
 /// Run the transform.
 pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
     let n_cells = data.n_cells;
@@ -1260,16 +1168,19 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
         vec![f64::INFINITY; modelled.len()]
     } else {
         let x_values: Vec<f64> = observations.iter().map(|&(x, _)| x).collect();
-        let bandwidth = sheather_jones_bandwidth(&x_values, options.bandwidth_adjust);
+        let bandwidth = crate::bandwidth::bw_sj(&x_values, options.bandwidth_adjust);
+        let low = x_values.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = x_values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         modelled
             .iter()
             .map(|&gene| {
                 if regularization_poisson[gene] {
                     f64::INFINITY
                 } else {
+                    let at = clamp_to_fitted_range(log_means[gene], low, high);
                     log10_od_factor_to_theta(
                         log_means[gene],
-                        kernel_smooth(&observations, log_means[gene], bandwidth),
+                        kernel_smooth(&observations, at, bandwidth),
                     )
                 }
             })
@@ -1283,7 +1194,9 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
             .collect()
     } else {
         let x_values: Vec<f64> = intercept_observations.iter().map(|&(x, _)| x).collect();
-        let bandwidth = sheather_jones_bandwidth(&x_values, options.bandwidth_adjust);
+        let bandwidth = crate::bandwidth::bw_sj(&x_values, options.bandwidth_adjust);
+        let low = x_values.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = x_values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         modelled
             .iter()
             .map(|&gene| {
@@ -1294,7 +1207,8 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
                 if regularization_poisson[gene] {
                     (gene_totals[gene] / grand_total).max(1e-30).ln()
                 } else {
-                    kernel_smooth(&intercept_observations, log_means[gene], bandwidth)
+                    let at = clamp_to_fitted_range(log_means[gene], low, high);
+                    kernel_smooth(&intercept_observations, at, bandwidth)
                 }
             })
             .collect()
@@ -1704,9 +1618,9 @@ mod tests {
             (linear, 0.545_357_608_768_253_8),
             (tied, 0.086_854_392_248_167_17),
         ] {
-            let actual = sheather_jones_bandwidth(&values, 1.0);
+            let actual = crate::bandwidth::bw_sj(&values, 1.0);
             assert!(
-                (actual / expected - 1.0).abs() < 0.006,
+                (actual / expected - 1.0).abs() < 1e-12,
                 "bw.SJ was {actual}, expected {expected}"
             );
         }

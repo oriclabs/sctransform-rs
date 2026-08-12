@@ -222,18 +222,53 @@ the *ratio* rose. Nothing got worse except a ratio with a smaller denominator.
 All four remaining gate failures are now theta. There is no longer an intercept
 problem to hide behind.
 
+### `bw.SJ` (fixed, and it did not matter)
+
+**Relative error against R: 0.218% → 4.07e-15.**
+
+R does not evaluate the 1991 plug-in equations, which is what this crate did.
+It bins the pairwise distances into 1,000 bins, sums the kernel functionals
+over bin counts rather than over pairs, and solves with `uniroot` at
+`tol = 0.1 * lower` -- about one percent of the answer. At that tolerance the
+returned value is not the root, it is wherever Brent's iteration happened to
+stop, so `R_zeroin2` is reproduced too. Substituting a tighter solver would
+return a better number and a worse match.
+
+An older test asserting R's values on two other datasets to 0.6% now passes at
+1e-12, which is independent confirmation on data this work never targeted.
+
+The pipeline barely moved: od-factor median absolute difference 0.002833 to
+0.002822, regularized theta 6.465% to 6.496%. The bandwidth was not the driver
+either.
+
+### Evaluation-point clamping (fixed, inert here)
+
+Upstream evaluates the smoother at
+`pmin(pmax(genes_log_gmean, min(step1)), max(step1))`. R clamps 1,025 of 13,799
+genes, 7.43%, all from below, by a median of 0.12 against a bandwidth of 0.55 --
+which looked like it had to matter. It changed nothing measurable, and the
+reason is that nearly all of those genes are sparse enough to fall under
+`mean < 0.001`, so their smoothed value is overwritten by the analytic offset
+model regardless. Kept because it is what upstream does and it will matter on a
+dataset whose sparse tail is not also low-mean.
+
 ### Still to do in step 3
+
+Three of the four suspected causes are now fixed and the od-factor difference
+is essentially where it started, so the remaining two carry all of it:
 
 - `is_outlier`: two bin grids offset by half a bin width, `robust_scale` per
   bin as `(y - median) / (mad + eps)` with `mad`'s 1.4826 constant, threshold
-  10 on the smaller absolute score. 18 genes.
-- The 21 genes where R's estimator returns infinite theta and this one returns
-  a finite value -- a boundary-condition difference in the MLE's early exits,
-  not in the objective.
-- `bw.SJ` proper: R bins pair distances into 1,000 bins and solves with
-  `uniroot`; this crate evaluates the 1991 equations directly and lands 0.218%
-  low. Needed twice, since `is_outlier` derives its bin width from it.
-- `ksmooth`'s `0.3706506` rescaling and four-bandwidth truncation.
+  10 on the smaller absolute score. **18 genes.**
+- The **21 genes** where R's estimator returns infinite theta and this one
+  returns a finite value -- a boundary-condition difference in the MLE's early
+  exits, not in the objective, since the objective is verified to 1.06e-11.
+
+39 genes out of 1,712 is 2.3% of the fit set, which sounds too small to explain
+a 0.0028 od-factor difference until you notice what they are: outliers are by
+construction the extreme values, and a kernel smoother with a bandwidth of 0.55
+in a range of about five is a local average. A handful of extreme points in the
+wrong place moves the curve where they sit.
 
 ### Licensing, which changed under us
 
