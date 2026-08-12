@@ -184,6 +184,57 @@ lesson from steps 1 and 2 is that only the *first* divergence is worth acting
 on. In particular the outlier and Poisson-exclusion rules change *which genes
 are smoothed*, and no bandwidth work means anything if the fit set is wrong.
 
+### The first divergence was the fit set, not the bandwidth
+
+Exporting every link at `%.17g` settled it. `dispersion_par` itself agrees to
+5.1e-11, and the step-one gene sets are identical. What differed is who is
+smoothed: **R smooths 1,712 genes, this port smoothed 1,780**, and all 68
+extras are genes R excludes — 18 of R's outliers, 29 of R's Poisson genes, and
+21 where R's estimator returns an infinite theta and this one does not.
+
+### Poisson exclusion (fixed)
+
+Upstream applies *two different Poisson rules at two different stages*, and
+this port applied the narrower one to both. Step-one sampling uses
+`variance - mean > 0` alone. Regularization builds `all_poisson_genes` as the
+union of that and `mean < 0.001`, and fits those with an analytic offset model
+rather than letting them into the smoother.
+
+| Measurement | step 2 | + Poisson rule |
+|---|---:|---:|
+| **Intercept RMSE** | 0.135231 | **0.031209** |
+| **Intercept slope** | 0.981348 | **0.998750** |
+| Median regularized theta rel. error | 6.709% | 6.465% |
+| od-factor median absolute difference | 0.002980 | 0.002833 |
+| Residual-variance slope | 1.005547 | 0.992416 |
+| Residual RMSE / R residual SD | 1.599% | 1.628% |
+
+`intercept_rmse_at_most_0_10` now passes. The intercept is essentially done.
+
+The residual numbers moved the wrong way by a little, and the reason is worth
+stating rather than hiding: an intercept error was partly cancelling the theta
+error in the residuals, and removing the intercept error removed the
+cancellation. The same arithmetic moved `theta_to_residual_attenuation` from
+0.229 to 0.258 and so failed a gate that had been passing -- theta error on the
+probe genes fell from 4.43% to 3.96% while residual error stayed at 1.02%, so
+the *ratio* rose. Nothing got worse except a ratio with a smaller denominator.
+
+All four remaining gate failures are now theta. There is no longer an intercept
+problem to hide behind.
+
+### Still to do in step 3
+
+- `is_outlier`: two bin grids offset by half a bin width, `robust_scale` per
+  bin as `(y - median) / (mad + eps)` with `mad`'s 1.4826 constant, threshold
+  10 on the smaller absolute score. 18 genes.
+- The 21 genes where R's estimator returns infinite theta and this one returns
+  a finite value -- a boundary-condition difference in the MLE's early exits,
+  not in the objective.
+- `bw.SJ` proper: R bins pair distances into 1,000 bins and solves with
+  `uniroot`; this crate evaluates the 1991 equations directly and lands 0.218%
+  low. Needed twice, since `is_outlier` derives its bin width from it.
+- `ksmooth`'s `0.3706506` rescaling and four-bandwidth truncation.
+
 ### Licensing, which changed under us
 
 glmGamPoi relicensed GPL-3 to MIT on 26 May 2026 (`a9eeed642`), and the four

@@ -1065,6 +1065,7 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
     let mut cell_totals = vec![0.0f64; n_cells];
     let mut gene_totals = vec![0.0f64; n_genes];
     let mut poisson_like = vec![false; n_genes];
+    let mut regularization_poisson = vec![false; n_genes];
     // The published regularizer uses the geometric mean of log1p counts. On a
     // sparse column this is exp(sum(log1p(nonzero))/n)-1; zeros contribute
     // exactly zero to the log sum and need not be materialized.
@@ -1083,11 +1084,21 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
         gene_totals[gene] = total;
         let mean = total / n_cells as f64;
         let variance = sample_variance_from_moments(total, squares, n_cells);
-        // Upstream `exclude_poisson` uses only `variance - mean > 0`.
-        // A previous BioLang guard also labelled means below 0.001 as
-        // Poisson-like, incorrectly removing rare but overdispersed genes from
-        // the step-one sampling population.
+        // Two different Poisson rules, applied at two different stages, and
+        // conflating them costs genes in both directions.
+        //
+        // Step-one sampling uses `variance - mean > 0` alone; adding a low-mean
+        // rule there removes rare but genuinely overdispersed genes from the
+        // population the density sample draws from.
+        //
+        // Regularization uses more: `reg_model_pars` builds `all_poisson_genes`
+        // as the union of `variance - mean <= 0` and `mean < 0.001`, and fits
+        // those with an analytic offset model instead of letting them into the
+        // smoother. Measured on the HBC control, the low-mean rule alone
+        // accounts for 29 of the 68 genes this port was smoothing that R was
+        // not.
         poisson_like[gene] = variance <= mean;
+        regularization_poisson[gene] = poisson_like[gene] || mean < 0.001;
         log_means[gene] = log10_geometric_mean(log_total, n_cells);
     }
     let grand_total: f64 = gene_totals.iter().sum::<f64>().max(1e-12);
@@ -1225,7 +1236,7 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
     let observations: Vec<(f64, f64)> = fit_genes
         .iter()
         .zip(&fitted)
-        .filter(|(gene, _)| !poisson_like[**gene])
+        .filter(|(gene, _)| !regularization_poisson[**gene])
         .filter_map(|(&gene, &(theta, _))| {
             theta.map(|value| {
                 (
@@ -1239,7 +1250,7 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
     let intercept_observations: Vec<(f64, f64)> = fit_genes
         .iter()
         .zip(&fitted)
-        .filter(|(gene, (theta, _))| !poisson_like[**gene] && theta.is_some())
+        .filter(|(gene, (theta, _))| !regularization_poisson[**gene] && theta.is_some())
         .map(|(&gene, &(_, intercept))| (log_means[gene], intercept))
         .collect();
 
@@ -1253,7 +1264,7 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
         modelled
             .iter()
             .map(|&gene| {
-                if poisson_like[gene] {
+                if regularization_poisson[gene] {
                     f64::INFINITY
                 } else {
                     log10_od_factor_to_theta(
@@ -1276,7 +1287,11 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
         modelled
             .iter()
             .map(|&gene| {
-                if poisson_like[gene] {
+                // `vst_out_offset`: the analytic model upstream substitutes for
+                // every gene in `all_poisson_genes`, which is the wider rule.
+                // `gene_total / grand_total` is `amean / mean_cell_sum`, so this
+                // is upstream's `log(genes_amean) - log(mean_cell_sum)`.
+                if regularization_poisson[gene] {
                     (gene_totals[gene] / grand_total).max(1e-30).ln()
                 } else {
                     kernel_smooth(&intercept_observations, log_means[gene], bandwidth)
