@@ -309,55 +309,36 @@ oracle SD 0.648%, slope 0.999624, Pearson 0.99998, worst per-gene correlation
 Recalibrating it is a judgement call rather than a fix, so it is left failing
 and documented rather than quietly adjusted.
 
-### Still open: 21 genes, and a fixture that could not see them
+### Resolved
 
-R reports an infinite theta for 241 step-one genes and this port for 220. The
-21 differences all sit between theta 1e5 and 1e7 -- genes with no real
-overdispersion, where R's estimator returns exactly zero and this one finds a
-very large finite value.
+The 21 genes are gone. R and this port now classify all 13,799 modelled genes
+identically as overdispersed or not -- 2,640 infinite thetas on each side, zero
+disagreements -- and every acceptance gate passes.
 
-**The earlier claim that "given identical inputs the two implementations
-classify every gene identically" was overstated.** It rested on
-`export_overdispersion_fixture.R` reporting zero regime disagreements over 300
-genes. Those 300 are sampled evenly across the expression range of all 13,799
-modelled genes, but the step-one set is a density-weighted subsample of 2,000 --
-and only **40 of the 300 fixture genes are step-one genes at all**. None of the
-21 is among them. The fixture reported no disagreements because it never tested
-the population that disagrees.
+The two candidate causes investigated here, the base-10 offset round trip and
+the moment estimator's three ULP-level details, were both inert on their own and
+are documented above as such. They are retained because they are what upstream
+computes. What closed the gap was the regularization and density work in
+`769431c`.
 
-What the fixture does still establish, on the genes it covers:
+The methodological note is worth keeping even though the symptom is gone. The
+fixture reported zero regime disagreements over 300 genes while 21 genes
+disagreed in the pipeline, because those 300 are sampled evenly across all
+13,799 modelled genes whereas the step-one set is a density-weighted subsample
+of 2,000 -- only 40 of the 300 were step-one genes at all, and none of the 21
+was among them. A fixture that cannot reach the failing population will report
+that nothing is wrong, indefinitely.
 
-| | |
-|---|---:|
-| Beta-stage intercept, median relative error | 0.000e0 (bit-identical) |
-| Beta-stage intercept, max relative error | 2.6e-16 |
-| Estimator, median relative theta error | 1.2e-10 |
-| Worst relative objective gap | 7.1e-12 |
+## Final state
 
-Two candidate causes were implemented and both proved inert. Neither moved any
-measured quantity, and the mismatch count stayed at exactly 21:
+Measured in [`revalidation-2026-08-12.md`](revalidation-2026-08-12.md), which
+covers the synthetic boundary fixture and both real HBC matrices. It is not
+repeated here.
 
-- **The base-10 offset round trip.** `fit_glmGamPoi_offset` computes its offset
-  as `log(10^log10_umi)`, which is not an identity in floating point -- it
-  changes 3,847 of 14,847 cell offsets, 25.9%, moving mu by up to 1.8e-15.
-- **The moment estimator's three ULP-level details**: the mean taken over
-  `exp(offset)` rather than raw column sums, R's two-pass `rowVars` rather than
-  the algebraically equal one-pass form, and `xim * bm` as a reciprocal times a
-  value rather than a division.
-
-Both are retained, because they are what upstream computes and there is no
-reason to compute something else, but neither is credited with a benefit it did
-not deliver.
-
-The next step is not another guess. It is to rebuild the fixture over the
-**step-one gene set and the 5,000-cell subsample the pipeline actually fits on**,
-so the failing genes are inside its coverage, and then read the far-left score
-at `overdispersion = 1e-8` directly for one of them. That score is a
-cancellation between two quantities each of size `sum(y)`; whichever term
-differs will be visible once the fixture can see the gene.
-
-### Where this leaves the port
-
-Residual error is 0.648% of the oracle's SD, from 1.476% at the start. One gate
-fails and it is the miscalibrated ratio described above. The 21 genes are the
-only concrete unexplained difference left, and they are 1% of the fit set.
+An independent re-run against a fresh oracle on the HBC control reproduced that
+document's control column: unregularized theta 5.55e-11, regularized theta
+7.90e-8, intercept RMSE 1.44e-5, top-3,000 overlap 3000/3000, residual RMSE
+1.56e-8 of the oracle's SD, residual slope 0.9999999955. Every gate the
+comparator applies passes, and R and this port classify all 13,799 modelled
+genes identically as overdispersed or not -- 2,640 infinite thetas each, zero
+disagreements.

@@ -1,4 +1,18 @@
-# HBC control validation — 2026-08-12
+# HBC control validation — 2026-08-12 (superseded)
+
+> **Superseded for the GPL executable.** The figures in the third column below
+> record an early milestone and are no longer current: fit-gene overlap is now
+> 100%, top-3,000 feature overlap 3000/3000, residual RMSE 1.56e-8 of the
+> oracle's SD, and every acceptance gate passes. See
+> [`revalidation-2026-08-12.md`](revalidation-2026-08-12.md) for the current
+> result and [`parity-status.md`](parity-status.md) for how it was reached.
+>
+> The R oracle and BioLang built-in columns still stand. The R transform time
+> of 40.420 s has been re-measured at 33.05 s and 37.47 s on a quiet host and
+> is sound; an earlier claim in
+> [`validation-reproduction-2026-08-12.md`](validation-reproduction-2026-08-12.md)
+> that it failed to reproduce has been withdrawn.
+
 
 This is a real-data, same-host comparison on the HBC training control matrix:
 14,847 cells, 14,065 input genes, and 13,799 modelled genes. GPU execution was

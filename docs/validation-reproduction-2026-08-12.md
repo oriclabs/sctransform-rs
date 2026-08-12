@@ -111,18 +111,21 @@ the whole process tree.
 Memory reproduced closely: 5.518 vs 5.526 GiB claimed for R, 1.636 vs 1.644 GiB
 for the GPL executable, 2.285 vs 2.292 GiB for the built-in.
 
-### One figure did not reproduce
+### The timing claim, and a correction to this document
 
-`validation-hbc-control.md` records the R oracle transform at **40.420 s**.
-Three runs on this host measured **76.86 s, 79.61 s, and 80.19 s** — roughly
-twice as slow, with no run anywhere near 40 s. The Rust timings from the same
-sessions reproduced normally, so this is specific to the R arm rather than a
-generally slower host.
+This section originally reported that the R oracle transform time of
+**40.420 s** did not reproduce: three runs measured 76.86, 79.61 and 80.19 s,
+and it concluded that the published figure understated the port's advantage.
 
-The published figure is conservative in the port's disfavour: at the measured
-oracle time the GPL executable is about 29x faster on the transform, not the
-13x the current document implies. The R number should be re-measured and the
-document corrected before it is cited.
+**That conclusion was wrong.** Later runs on the same host measured 33.05 s and
+37.47 s. The original 40.420 s is reproducible; the three slow runs were taken
+while the machine was loaded, and the load was attributed to the reference
+rather than to the measurement. Nothing about the R arm was at fault.
+
+The lesson is narrow and worth keeping: a timing that fails to reproduce is
+evidence about the host until it has been repeated on a quiet one. Every
+accuracy figure in this document did reproduce, because accuracy does not care
+what else the machine is doing.
 
 ## Reproducibility gap
 
