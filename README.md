@@ -22,7 +22,9 @@ accepted only after three-way comparison with:
 3. this standalone executable.
 
 See [PORTING.md](PORTING.md) for the provenance and parity policy.
-The latest measured HBC control comparison is recorded in
+The latest three-dataset comparison is recorded in
+[docs/revalidation-2026-08-12.md](docs/revalidation-2026-08-12.md). The earlier
+baseline is retained in
 [docs/validation-hbc-control.md](docs/validation-hbc-control.md).
 
 ## Build

@@ -1,16 +1,20 @@
 # Parity status
 
-Where the port stands against R `sctransform` 0.4.3 with `glmGamPoi` 1.22.0,
-and what is left. Measurements are on the HBC control matrix: 14,847 cells,
-14,065 input genes, 13,799 modelled genes.
+This file is the chronological implementation log against R `sctransform`
+0.4.3 with `glmGamPoi` 1.22.0. Its intermediate “remaining” counts describe
+the stage at which each section was written, not the current result. The final
+fresh synthetic, HBC control, and HBC stimulated measurements are in
+[`revalidation-2026-08-12.md`](revalidation-2026-08-12.md).
 
 ## Reachable target
 
-Bit-identical output is not reachable and is not the goal. R sums through its
-own BLAS in its own order, so the last bits will differ however faithful the
-port is. The target is agreement to roughly 1e-10 relative, at which every
-acceptance gate passes and the ranked feature lists are identical gene for
-gene. No downstream analysis can distinguish two results that close.
+Portable bit-identical output is not reachable: R's compiler, BLAS, FFT, and
+math library affect the final bits. The current provider passes every
+scale-sensitive gate. Control and synthetic top-feature lists are identical;
+stimulated HBC has 99.933% top-3,000 overlap and residual RMSE equal to 0.1297%
+of the R residual standard deviation.
+
+## Historical implementation log
 
 ## Step 1 — step-one gene sampling (done)
 

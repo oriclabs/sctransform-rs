@@ -20,11 +20,14 @@ byte-identical before and after. This port therefore treats that file as
 LGPL-3, not MIT. GNU LGPL version 3 section 2 permits conveying such a work
 under the GNU GPL version 3, which is what this repository does.
 
-The density binning and unequal-probability sampling compatibility work is
-derived from the R statistical computing environment, Copyright the R Core
-Team, the R Foundation, Robert Gentleman, Ross Ihaka, and Adrian Baddeley. The
-relevant R source is offered under GPL version 2 or later and is incorporated
-here under GPL version 3.
+The density binning, FFT, interpolation, and unequal-probability sampling
+compatibility work is derived from the R statistical computing environment,
+Copyright the R Core Team, the R Foundation, Robert Gentleman, Ross Ihaka,
+Adrian Baddeley, and other contributors. The vendored FFT routines are R
+Core's C translation of Richard Singleton's mixed-radix FFT. The relevant R
+source is offered under GPL version 2 or later and is incorporated here under
+GPL version 3. The vendored file was taken from R source commit
+`a2066dd40b0c7ee16c388c6153f1f884faa50b24`.
 
 The initial Rust normalization engine was taken from the MIT-licensed BioLang
 project at commit `52b72de518aa71a74120b5e8c03eb7cf9daff6bf`:

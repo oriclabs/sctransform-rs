@@ -30,8 +30,10 @@ repository's [LICENSE](LICENSE).
 
 ## R statistical computing environment
 
-Compatibility translations of `stats::density`, `BinDist`, and weighted
-sampling are based on R source distributed under GNU GPL version 2 or later.
+Compatibility translations of `stats::density`, `BinDist`, `approx`, and
+weighted sampling, plus the vendored R Core FFT implementation in
+`crates/sctransform-rs/native/r_fft.c`, are based on R source distributed
+under GNU GPL version 2 or later.
 Copyright is held by the R Core Team, the R Foundation, Robert Gentleman, Ross
 Ihaka, Adrian Baddeley, and other contributors. Under the “or later” grant,
 those portions are conveyed here under GNU GPL version 3.

@@ -261,6 +261,142 @@ pub struct OffsetFit {
     pub intercept: f64,
 }
 
+/// Mean of the first-stage fitted means, using glmGamPoi's offset round trip.
+pub(crate) fn fitted_mean(intercept: f64, cell_totals: &[f64]) -> f64 {
+    if cell_totals.is_empty() {
+        return 0.0;
+    }
+    let offset_mean = cell_totals
+        .iter()
+        .map(|total| 10f64.powf(total.log10()))
+        .sum::<f64>()
+        / cell_totals.len() as f64;
+    intercept.exp() * offset_mean
+}
+
+/// Refit glmGamPoi's intercept after its batch-level dispersion shrinkage.
+///
+/// `glm_gp` reports the original per-gene dispersion estimate but reports beta
+/// from a second `fitBeta_one_group` call using the local-median dispersion
+/// trend. sctransform stores that second beta in `model_pars`, so returning the
+/// first beta makes intercept outlier detection and regularization diverge.
+pub(crate) fn refit_intercept(
+    counts: &[(usize, f64)],
+    cell_totals: &[f64],
+    start: f64,
+    dispersion: f64,
+) -> f64 {
+    if cell_totals.is_empty() || !start.is_finite() {
+        return start;
+    }
+    let mut dense = vec![0.0f64; cell_totals.len()];
+    for &(cell, count) in counts {
+        dense[cell] = count;
+    }
+    let offsets: Vec<f64> = cell_totals
+        .iter()
+        .map(|total| 10f64.powf(total.log10()).ln())
+        .collect();
+    let mut beta = start;
+    for _ in 0..100 {
+        let mut dl = 0.0;
+        let mut ddl = 0.0;
+        for (cell, &offset) in offsets.iter().enumerate() {
+            let count = dense[cell];
+            let mu = (beta + offset).exp();
+            let denominator = 1.0 + mu * dispersion;
+            dl += (count - mu) / denominator;
+            ddl += mu * (1.0 + count * dispersion) / denominator / denominator;
+        }
+        let step = dl / ddl;
+        beta += step;
+        if step.abs() < 1e-8 || beta.is_nan() {
+            break;
+        }
+    }
+    beta.max(-1e8)
+}
+
+fn weighted_median(values: &[f64], weights: &[f64]) -> f64 {
+    let mut order: Vec<usize> = (0..values.len()).collect();
+    order.sort_by(|&left, &right| {
+        values[left]
+            .total_cmp(&values[right])
+            .then(left.cmp(&right))
+    });
+    let total = weights.iter().sum::<f64>();
+    let midpoint = total / 2.0;
+    let mut cumulative = 0.0;
+    for (position, &index) in order.iter().enumerate() {
+        cumulative += weights[index];
+        if cumulative > midpoint {
+            return values[index];
+        }
+        if cumulative == midpoint && position + 1 < order.len() {
+            return (values[index] + values[order[position + 1]]) / 2.0;
+        }
+    }
+    values[*order.last().unwrap_or(&0)]
+}
+
+fn normal_weights(length: usize) -> Vec<f64> {
+    if length <= 1 {
+        return vec![1.0; length];
+    }
+    (0..length)
+        .map(|index| {
+            let z = -3.0 + 6.0 * index as f64 / (length - 1) as f64;
+            (-0.5 * z * z).exp()
+        })
+        .collect()
+}
+
+/// glmGamPoi's `loc_median_fit`, used as the second-beta dispersion trend.
+///
+/// Upstream calls it independently for each sctransform bin (normally 500
+/// genes) with `npoints = max(0.1 * n, 100)`. The even 100-point request
+/// deliberately produces a 101-value moving window because the implementation
+/// uses `floor(npoints/2)` on both sides of the centre.
+pub(crate) fn local_median_dispersion_trend(means: &[f64], dispersions: &[f64]) -> Vec<f64> {
+    assert_eq!(means.len(), dispersions.len());
+    let n = means.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let requested = (0.1 * n as f64).max(100.0).min(n as f64);
+    let npoints = requested as usize;
+    let half = npoints / 2;
+    let start = half;
+    let end_exclusive = n.saturating_sub(half);
+
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&left, &right| means[left].total_cmp(&means[right]).then(left.cmp(&right)));
+    let ordered: Vec<f64> = order.iter().map(|&index| dispersions[index]).collect();
+    let mut sorted_result = vec![f64::NAN; n];
+
+    if end_exclusive <= start {
+        let weights = normal_weights(n);
+        let median = weighted_median(&ordered, &weights);
+        sorted_result.fill(median);
+    } else {
+        let weights = normal_weights(half * 2 + 1);
+        for center in start..end_exclusive {
+            sorted_result[center] =
+                weighted_median(&ordered[center - half..=center + half], &weights);
+        }
+        let left_value = sorted_result[start];
+        let right_value = sorted_result[end_exclusive - 1];
+        sorted_result[..start].fill(left_value);
+        sorted_result[end_exclusive..].fill(right_value);
+    }
+
+    let mut result = vec![0.0; n];
+    for (sorted, &original) in order.iter().enumerate() {
+        result[original] = sorted_result[sorted];
+    }
+    result
+}
+
 /// `glm_gp(design = ~1, offset = log(total_umi), size_factors = FALSE)`, for
 /// one gene.
 ///

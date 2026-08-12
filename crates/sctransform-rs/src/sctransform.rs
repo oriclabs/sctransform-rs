@@ -682,19 +682,20 @@ fn density_weighted_sample(
     // indistinguishable curve but changes enough probability mass to select a
     // different 2,000-gene set under the same random stream.
     //
-    // The linear binning below is a Rust translation of R's GPL-compatible
-    // stats::density/BinDist path (r-source src/library/stats/R/density.R and
-    // src/library/stats/src/massdist.c). At only 512 bins, direct Gaussian
-    // convolution is smaller and clearer than carrying an FFT implementation,
-    // while evaluating the same mathematical circular convolution.
+    // The linear binning and FFT below follow R's stats::density/BinDist path
+    // (r-source src/library/stats/R/density.R, fft.c, and massdist.c). The FFT
+    // is important even at only 512 output bins: direct convolution is
+    // mathematically equivalent, but last-bit differences can be amplified by
+    // sequential sampling without replacement into a different gene set.
     const GRID: usize = 512;
+    const FFT_GRID: usize = GRID * 2;
     const NORMALIZER: f64 = 0.398_942_280_401_432_7;
     let from = x[0] - 3.0 * bandwidth;
     let to = x[n - 1] + 3.0 * bandwidth;
     let lower = from - 4.0 * bandwidth;
     let upper = to + 4.0 * bandwidth;
     let bin_step = (upper - lower) / (GRID - 1) as f64;
-    let mut bins = vec![0.0f64; GRID];
+    let mut bins = vec![0.0f64; FFT_GRID];
     // Bin in the original gene order, as R's C_BinDist does. Reordering these
     // additions is mathematically harmless but changes the last bits of bins;
     // sequential weighted sampling can amplify those differences.
@@ -710,53 +711,104 @@ fn density_weighted_sample(
             bins[bin] += (1.0 - fraction) * weight;
         }
     }
-    let convolved: Vec<f64> = (0..GRID)
-        .map(|at| {
-            bins.iter()
-                .enumerate()
-                .map(|(source, weight)| {
-                    let z = (source as isize - at as isize) as f64 * bin_step / bandwidth;
-                    weight * NORMALIZER / bandwidth * (-0.5 * z * z).exp()
-                })
-                .sum::<f64>()
-                .max(0.0)
+    let kernel_max = ((FFT_GRID - 1) as f64 / (GRID - 1) as f64) * (upper - lower);
+    let kernel_step = kernel_max / (FFT_GRID - 1) as f64;
+    let mut kernel_coordinates: Vec<f64> = (0..FFT_GRID)
+        .map(|index| index as f64 * kernel_step)
+        .collect();
+    kernel_coordinates[FFT_GRID - 1] = kernel_max;
+    // R's one-based assignment (n + 2):(2*n) <- -kords[n:2]. The point at
+    // n + 1 is deliberately left as the positive Nyquist coordinate.
+    for destination in (GRID + 1)..FFT_GRID {
+        let source = (FFT_GRID - destination) - 1;
+        kernel_coordinates[destination] = -kernel_coordinates[source + 1];
+    }
+    let mut kernel: Vec<f64> = kernel_coordinates
+        .into_iter()
+        .map(|coordinate| {
+            let z = coordinate / bandwidth;
+            (NORMALIZER * (-0.5 * z * z).exp()) / bandwidth
         })
         .collect();
-    let interpolate = |values: &[f64], origin: f64, step: f64, at: f64| -> f64 {
-        let position = ((at - origin) / step).clamp(0.0, (values.len() - 1) as f64);
-        let left = position.floor() as usize;
-        let right = (left + 1).min(values.len() - 1);
-        let fraction = position - left as f64;
-        values[left] * (1.0 - fraction) + values[right] * fraction
+    let mut bins_imaginary = vec![0.0; FFT_GRID];
+    let mut kernel_imaginary = vec![0.0; FFT_GRID];
+    crate::r_fft::transform(&mut bins, &mut bins_imaginary, false);
+    crate::r_fft::transform(&mut kernel, &mut kernel_imaginary, false);
+    for index in 0..FFT_GRID {
+        let left_real = bins[index];
+        let left_imaginary = bins_imaginary[index];
+        let right_real = kernel[index];
+        let right_imaginary = kernel_imaginary[index];
+        // fft(y) * Conj(fft(kernel))
+        bins[index] = left_real * right_real + left_imaginary * right_imaginary;
+        bins_imaginary[index] = left_imaginary * right_real - left_real * right_imaginary;
+    }
+    crate::r_fft::transform(&mut bins, &mut bins_imaginary, true);
+    let convolved: Vec<f64> = bins[..GRID]
+        .iter()
+        .map(|value| (value / FFT_GRID as f64).max(0.0))
+        .collect();
+    let r_sequence = |start: f64, end: f64, length: usize| -> Vec<f64> {
+        let step = (end - start) / (length - 1) as f64;
+        let mut result = Vec::with_capacity(length);
+        result.push(start);
+        for index in 1..length - 1 {
+            result.push(start + index as f64 * step);
+        }
+        result.push(end);
+        result
     };
-    let output_step = (to - from) / (GRID - 1) as f64;
-    let density_grid: Vec<f64> = (0..GRID)
-        .map(|index| {
-            interpolate(
-                &convolved,
-                lower,
-                bin_step,
-                from + index as f64 * output_step,
-            )
-        })
+    let interpolate = |coordinates: &[f64], values: &[f64], at: f64| -> f64 {
+        if at <= coordinates[0] {
+            return values[0];
+        }
+        if at >= coordinates[coordinates.len() - 1] {
+            return values[values.len() - 1];
+        }
+        // Match stats::approx's C binary search and arithmetic expression.
+        let mut left = 0usize;
+        let mut right = coordinates.len() - 1;
+        while left < right - 1 {
+            let middle = (left + right) / 2;
+            if at < coordinates[middle] {
+                right = middle;
+            } else {
+                left = middle;
+            }
+        }
+        if at == coordinates[right] {
+            return values[right];
+        }
+        if at == coordinates[left] {
+            return values[left];
+        }
+        values[left]
+            + (values[right] - values[left])
+                * ((at - coordinates[left]) / (coordinates[right] - coordinates[left]))
+    };
+    let bin_coordinates = r_sequence(lower, upper, GRID);
+    let output_coordinates = r_sequence(from, to, GRID);
+    let density_grid: Vec<f64> = output_coordinates
+        .iter()
+        .map(|&coordinate| interpolate(&bin_coordinates, &convolved, coordinate))
         .collect();
 
     let mut weighted_candidates = Vec::with_capacity(n);
     for (index, value) in candidate_x.iter().copied().enumerate() {
-        let density = interpolate(&density_grid, from, output_step, value);
-        weighted_candidates.push((1.0 / density.max(f64::MIN_POSITIVE), candidates[index]));
+        let density = interpolate(&output_coordinates, &density_grid, value);
+        // Upstream adds .Machine$double.eps before inversion. This is visible
+        // in sparse tails and can change a seeded sequential sample.
+        weighted_candidates.push((1.0 / (density + f64::EPSILON), candidates[index]));
     }
 
     let diagnostic_weights: Vec<f64> = weighted_candidates
         .iter()
         .map(|(weight, _gene)| *weight)
         .collect();
-    let mut selected = weighted_sample_without_replacement(weighted_candidates, wanted, rng);
-    selected.sort_by(|left, right| {
-        log_means[*left]
-            .total_cmp(&log_means[*right])
-            .then(left.cmp(right))
-    });
+    // R preserves the draw order. Do not sort after sampling: glmGamPoi's
+    // dispersion shrinkage is performed in consecutive 500-gene bins, so a
+    // reorder changes the second beta fit even when the selected set is equal.
+    let selected = weighted_sample_without_replacement(weighted_candidates, wanted, rng);
     DensityWeightedSample {
         selected,
         candidates: candidates.to_vec(),
@@ -972,6 +1024,8 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
     // means O(n log n) rescans of the whole sparse column.
     let mut cell_totals = vec![0.0f64; n_cells];
     let mut gene_totals = vec![0.0f64; n_genes];
+    let mut gene_means = vec![0.0f64; n_genes];
+    let mut gene_variances = vec![0.0f64; n_genes];
     let mut poisson_like = vec![false; n_genes];
     let mut regularization_poisson = vec![false; n_genes];
     // The published regularizer uses the geometric mean of log1p counts. On a
@@ -992,6 +1046,8 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
         gene_totals[gene] = total;
         let mean = total / n_cells as f64;
         let variance = sample_variance_from_moments(total, squares, n_cells);
+        gene_means[gene] = mean;
+        gene_variances[gene] = variance;
         // Two different Poisson rules, applied at two different stages, and
         // conflating them costs genes in both directions.
         //
@@ -1014,15 +1070,14 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
 
     // SCT v2 estimates parameters from a fixed-size cell sample. Use a local
     // R-compatible stream for the public fixed-seed sampling contract; it does
-    // not touch BioLang's global RNG or depend on thread order. Sorting the
-    // retained indices restores sparse-column traversal order for likelihoods.
+    // not touch BioLang's global RNG or depend on thread order. The sampled
+    // order is retained: glmGamPoi consumes offsets in that order, and floating
+    // summation at the near-Poisson boundary is observably order-sensitive.
     let mut sampling_rng = RMersenneTwister::new(1_448_145);
     let fit_cells: Vec<usize> = if options.cells_for_fit == 0 || n_cells <= options.cells_for_fit {
         (0..n_cells).collect()
     } else {
-        let mut indices = sampling_rng.sample_indices(n_cells, options.cells_for_fit);
-        indices.sort_unstable();
-        indices
+        sampling_rng.sample_indices(n_cells, options.cells_for_fit)
     };
     let mut fit_cell_lookup = vec![usize::MAX; n_cells];
     for (local, &cell) in fit_cells.iter().enumerate() {
@@ -1091,49 +1146,83 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
     let fit_genes = gene_sample.selected;
 
     // -- Estimate theta on those genes ------------------------------------
-    let fitted = parallel_map(options.threads, fit_genes.clone(), {
-        let fit_cell_totals = fit_cell_totals.clone();
-        let fit_cell_lookup = fit_cell_lookup.clone();
-        let columns: Vec<Vec<(usize, f64)>> = fit_genes
-            .iter()
-            .map(|&gene| {
-                let (cells, counts) = data.column(gene);
-                cells
-                    .iter()
-                    .zip(counts)
-                    .filter_map(|(&cell, &count)| {
-                        let local = fit_cell_lookup[cell as usize];
-                        (local != usize::MAX).then_some((local, count))
-                    })
-                    .collect()
-            })
-            .collect();
-        let totals: Vec<f64> = fit_genes.iter().map(|&g| gene_totals[g]).collect();
-        let poisson: Vec<bool> = fit_genes.iter().map(|&gene| poisson_like[gene]).collect();
-        move |slot: usize, _gene: usize| {
-            let scale = totals[slot] / grand_total;
-            let fallback = scale.max(1e-30).ln();
-            if poisson[slot] {
-                return (None, fallback);
-            }
-            // `fit_glmGamPoi_offset`, rather than this crate's own Cox-Reid
-            // fit. Handed identical inputs the two disagreed by 1.3% at the
-            // median; against glmGamPoi the ported chain agrees to 1.3e-10.
-            let fit = crate::overdispersion::fit_offset_model(&columns[slot], &fit_cell_totals);
-            if fit.theta.is_finite() && fit.intercept.is_finite() {
-                (Some(fit.theta), fit.intercept)
-            } else {
-                (
-                    None,
-                    if fit.intercept.is_finite() {
-                        fit.intercept
-                    } else {
-                        fallback
-                    },
-                )
-            }
+    let fit_columns: Vec<Vec<(usize, f64)>> = fit_genes
+        .iter()
+        .map(|&gene| {
+            let (cells, counts) = data.column(gene);
+            cells
+                .iter()
+                .zip(counts)
+                .filter_map(|(&cell, &count)| {
+                    let local = fit_cell_lookup[cell as usize];
+                    (local != usize::MAX).then_some((local, count))
+                })
+                .collect()
+        })
+        .collect();
+    let mut fitted = parallel_map(options.threads, fit_genes.clone(), |slot, gene| {
+        let scale = gene_totals[gene] / grand_total;
+        let fallback = scale.max(1e-30).ln();
+        if poisson_like[gene] {
+            return (None, fallback);
+        }
+        // `fit_glmGamPoi_offset`, rather than this crate's own Cox-Reid
+        // fit. Handed identical inputs the two disagreed by 1.3% at the
+        // median; against glmGamPoi the ported chain agrees to 1.3e-10.
+        let fit = crate::overdispersion::fit_offset_model(&fit_columns[slot], &fit_cell_totals);
+        if fit.theta.is_finite() && fit.intercept.is_finite() {
+            (Some(fit.theta), fit.intercept)
+        } else {
+            (
+                None,
+                if fit.intercept.is_finite() {
+                    fit.intercept
+                } else {
+                    fallback
+                },
+            )
         }
     });
+
+    // `glm_gp` operates on sctransform's 500-gene bins. It estimates theta
+    // from the first beta fit, constructs a local-median dispersion trend over
+    // the whole bin, then fits beta again using that trend. It returns the
+    // original theta and the second beta. The bin membership and order are
+    // therefore part of the observable algorithm.
+    for start in (0..fit_genes.len()).step_by(500) {
+        let end = (start + 500).min(fit_genes.len());
+        let means: Vec<f64> = (start..end)
+            .map(|slot| crate::overdispersion::fitted_mean(fitted[slot].1, &fit_cell_totals))
+            .collect();
+        let dispersions: Vec<f64> = (start..end)
+            .map(|slot| fitted[slot].0.map_or(0.0, |theta| 1.0 / theta))
+            .collect();
+        let trend = crate::overdispersion::local_median_dispersion_trend(&means, &dispersions);
+        for slot in start..end {
+            let local = slot - start;
+            fitted[slot].1 = crate::overdispersion::refit_intercept(
+                &fit_columns[slot],
+                &fit_cell_totals,
+                fitted[slot].1,
+                trend[local],
+            );
+        }
+    }
+
+    // sctransform applies one more v2 guard after glmGamPoi: when the naive
+    // moment theta is over 1,000 times smaller than the MLE theta, the MLE is
+    // treated as unidentifiable and replaced by infinity. This is the entire
+    // six-gene synthetic discrepancy and the 21-gene HBC-control discrepancy
+    // previously attributed to optimizer cancellation.
+    for (slot, &gene) in fit_genes.iter().enumerate() {
+        if let Some(theta) = fitted[slot].0 {
+            let denominator = gene_variances[gene] - gene_means[gene];
+            let moment_theta = gene_means[gene] * gene_means[gene] / denominator;
+            if moment_theta / theta < 1e-3 {
+                fitted[slot].0 = None;
+            }
+        }
+    }
 
     // -- Regularize --------------------------------------------------------
     //

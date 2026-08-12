@@ -8,6 +8,7 @@
 mod bandwidth;
 mod outlier;
 mod overdispersion;
+mod r_fft;
 mod sctransform;
 
 pub use bandwidth::bw_sj;
