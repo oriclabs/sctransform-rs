@@ -147,13 +147,42 @@ That difference is small in its own units and large after inversion:
 roughly 7% in theta. Nothing downstream of the regularizer can be improved
 without fixing the regularizer first.
 
-## Step 3 — regularization (next, and now the only thing left)
+## Step 3 — regularization (started; carries all remaining error)
 
-R's `ksmooth` over the od-factor scale, with the Sheather-Jones bandwidth and
-`bw_adjust = 3`, plus the `min_variance = umi_median` floor and the
-`exclude_poisson` handling around it. Previously this could not be attributed;
-it now carries all of the remaining error and is measurable on its own, because
-its input matches the reference to eleven digits.
+`reg_model_pars` is a longer chain than "smooth the od-factor", and each link
+is a candidate:
+
+1. `dispersion_par = log10(1 + 10^log_gmean_step1 / theta)`;
+2. `is_outlier` on **every** column of `model_pars`, scored by
+   `robust_scale_binned` against two bin grids offset by half a bin width, with
+   a threshold of 10 on the smaller absolute score -- outliers are dropped from
+   the fit;
+3. `exclude_poisson` additionally drops genes with `theta = Inf`, with
+   `variance <= mean`, and with `mean < 0.001`, and replaces them with an
+   analytic offset model rather than a smoothed one;
+4. `bw <- bw.SJ(genes_log_gmean_step1) * bw_adjust`;
+5. `x_points` clamped to the step-1 range, then
+   `ksmooth(kernel = "normal", bandwidth = bw)`.
+
+Point 5 hides two constants in R's C source: `ksmooth` rescales the bandwidth
+by `0.3706506` and **truncates the kernel at four scaled bandwidths**. A
+Gaussian smoother without that truncation is a different estimator.
+
+### First measurement
+
+R's `bw.SJ` on the 2,000 step-one genes is `0.184475430376767`. This crate's
+`sheather_jones_bandwidth` returns `0.18407329286868537` -- **0.218% low**.
+
+That is a real divergence but probably not the whole 0.00298 in od-factor, so
+it is a starting point rather than an answer. R's `bw.SJ` is not the 1991
+equations evaluated directly, which is what this crate implements: it bins the
+pair distances into 1,000 bins and solves with `uniroot`, and the binning is
+part of the result rather than an optimisation of it.
+
+The links above are listed in the order they must be checked, because the
+lesson from steps 1 and 2 is that only the *first* divergence is worth acting
+on. In particular the outlier and Poisson-exclusion rules change *which genes
+are smoothed*, and no bandwidth work means anything if the fit set is wrong.
 
 ### Licensing, which changed under us
 
