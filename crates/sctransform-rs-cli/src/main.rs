@@ -27,6 +27,8 @@ struct RunArguments {
     probe_genes: usize,
     probe_cells: usize,
     write_matrix: bool,
+    write_binary_matrix: bool,
+    regress_mito: bool,
 }
 
 struct MexInput {
@@ -82,6 +84,8 @@ fn print_help() {
          --probe-genes N   Genes written to residuals.csv [default: 3000]\n  \
          --probe-cells N   Cells written to residuals.csv [default: 64]\n  \
          --write-matrix    Also write the complete kept residual matrix\n\n\
+         --write-binary-matrix  Write a compact row-major f64 residual matrix\n  \
+         --regress-mito    Regress the per-cell fraction from MT- genes\n\n\
          COMMANDS:\n  \
          license           Show copyright, license, warranty, and source notice\n  \
          version           Show executable and engine versions"
@@ -96,11 +100,22 @@ fn parse_run_arguments(values: &[String]) -> Result<RunArguments, (u8, String)> 
     let mut probe_genes = 3000;
     let mut probe_cells = 64;
     let mut write_matrix = false;
+    let mut write_binary_matrix = false;
+    let mut regress_mito = false;
     let mut index = 0;
     while index < values.len() {
         let option = values[index].as_str();
-        if option == "--write-matrix" {
-            write_matrix = true;
+        if option == "--write-matrix"
+            || option == "--write-binary-matrix"
+            || option == "--regress-mito"
+        {
+            if option == "--write-matrix" {
+                write_matrix = true;
+            } else if option == "--write-binary-matrix" {
+                write_binary_matrix = true;
+            } else {
+                regress_mito = true;
+            }
             index += 1;
             continue;
         }
@@ -126,6 +141,8 @@ fn parse_run_arguments(values: &[String]) -> Result<RunArguments, (u8, String)> 
         probe_genes,
         probe_cells,
         write_matrix,
+        write_binary_matrix,
+        regress_mito,
     })
 }
 
@@ -142,9 +159,15 @@ fn run(arguments: RunArguments) -> Result<(), (u8, String)> {
     eprintln!("engine={ENGINE} version={VERSION} license=GPL-3.0-only protocol={PROTOCOL}");
     prepare_output_directory(&arguments.output)?;
     let input = read_mex(&arguments.input).map_err(|message| (3, message))?;
+    let latent_covariates = if arguments.regress_mito {
+        vec![mitochondrial_fraction(&input)]
+    } else {
+        Vec::new()
+    };
     let options = SctOptions {
         n_variable_features: arguments.n_features,
         threads: arguments.threads,
+        latent_covariates,
         ..SctOptions::default()
     };
     let started = Instant::now();
@@ -160,6 +183,29 @@ fn run(arguments: RunArguments) -> Result<(), (u8, String)> {
         result.kept_genes.len()
     );
     Ok(())
+}
+
+fn mitochondrial_fraction(input: &MexInput) -> Vec<f64> {
+    let mut totals = vec![0.0; input.matrix.n_cells];
+    let mut mitochondrial = vec![0.0; input.matrix.n_cells];
+    for gene in 0..input.matrix.n_genes() {
+        let start = input.matrix.starts[gene];
+        let end = input.matrix.starts[gene + 1];
+        let is_mitochondrial = input.genes[gene].starts_with("MT-");
+        for index in start..end {
+            let cell = input.matrix.cells[index] as usize;
+            let count = input.matrix.counts[index];
+            totals[cell] += count;
+            if is_mitochondrial {
+                mitochondrial[cell] += count;
+            }
+        }
+    }
+    mitochondrial
+        .into_iter()
+        .zip(totals)
+        .map(|(mito, total)| if total > 0.0 { mito / total } else { 0.0 })
+        .collect()
 }
 
 fn prepare_output_directory(path: &Path) -> Result<(), (u8, String)> {
@@ -402,16 +448,19 @@ fn write_outputs(
     if arguments.write_matrix {
         write_residual_matrix(output.join("matrix.mtx"), input, result)?;
     }
+    if arguments.write_binary_matrix {
+        write_binary_residual_matrix(output.join("matrix.f64"), input, result)?;
+    }
 
     let mut manifest = writer(output.join("manifest.csv"))?;
-    writeln!(manifest, "implementation,engine,version,license,protocol_version,cells,genes,modelled_genes,fit_candidate_genes,sampling_bandwidth,clip,seed,cells_for_fit,genes_for_fit,min_cells,residual_probe_strategy,residual_probe_genes,residual_probe_cells,elapsed_seconds,matrix_written")
+    writeln!(manifest, "implementation,engine,version,license,protocol_version,cells,genes,modelled_genes,fit_candidate_genes,sampling_bandwidth,clip,seed,cells_for_fit,genes_for_fit,min_cells,residual_probe_strategy,residual_probe_genes,residual_probe_cells,elapsed_seconds,matrix_written,binary_matrix_written,mitochondrial_fraction_regressed")
         .map_err(write_error)?;
     let clip = options
         .clip
         .unwrap_or_else(|| (input.matrix.n_cells as f64 / 30.0).sqrt());
     writeln!(
         manifest,
-        "sctransform-rs,{ENGINE},{VERSION},GPL-3.0-only,{PROTOCOL},{},{},{},{},{},{clip},1448145,{},{},{},top_residual_variance,{},{},{elapsed},{}",
+        "sctransform-rs,{ENGINE},{VERSION},GPL-3.0-only,{PROTOCOL},{},{},{},{},{},{clip},1448145,{},{},{},top_residual_variance,{},{},{elapsed},{},{},{}",
         input.matrix.n_cells,
         input.matrix.n_genes(),
         result.kept_genes.len(),
@@ -422,9 +471,36 @@ fn write_outputs(
         options.min_cells,
         probe_genes.len(),
         probe_cells,
-        arguments.write_matrix
+        arguments.write_matrix,
+        arguments.write_binary_matrix,
+        arguments.regress_mito
     )
     .map_err(write_error)?;
+    Ok(())
+}
+
+/// Neutral interchange format used at the process boundary:
+/// magic `BLMATF64`, little-endian u64 rows, little-endian u64 columns, then
+/// row-major IEEE-754 f64 values. BioLang's MIT reader is generic and neither
+/// links to nor depends on this executable.
+fn write_binary_residual_matrix(
+    path: PathBuf,
+    input: &MexInput,
+    result: &sctransform_rs::SctResult,
+) -> Result<(), String> {
+    let mut output = writer(path)?;
+    output.write_all(b"BLMATF64").map_err(write_error)?;
+    output
+        .write_all(&(input.matrix.n_cells as u64).to_le_bytes())
+        .map_err(write_error)?;
+    output
+        .write_all(&(result.kept_genes.len() as u64).to_le_bytes())
+        .map_err(write_error)?;
+    for value in &result.residuals {
+        output
+            .write_all(&value.to_le_bytes())
+            .map_err(write_error)?;
+    }
     Ok(())
 }
 
