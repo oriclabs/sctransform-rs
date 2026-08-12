@@ -668,6 +668,33 @@ fn sample_variance_from_moments(sum: f64, sum_squares: f64, count: usize) -> f64
     }
 }
 
+/// log10 of a gene's geometric mean, from the running sum of `log(count + 1)`
+/// over its non-zero cells. Zeros contribute `log(1) = 0` and are skipped.
+///
+/// The last step is written `exp(m) - 1` rather than `expm1(m)` deliberately,
+/// and the choice is not a matter of taste. `expm1` is the *more* accurate of
+/// the two for the small `m` a sparse gene produces, which is precisely why it
+/// cannot be used: upstream `row_gmean_dgcmatrix` computes `exp(sum/ncol) -
+/// eps`, so the more accurate form is the one that disagrees with the
+/// reference.
+///
+/// A one-ULP disagreement here is not cosmetic. This value is the abscissa of
+/// the step-one density estimate, so it moves the `bw.nrd` bandwidth, moves
+/// every interpolated density, and reweights a sequential sample *without
+/// replacement* -- where one flipped draw changes the population every later
+/// draw sees. Measured on the HBC control: `expm1` reproduced R's log
+/// geometric mean for 8.32% of candidate genes and selected 91.55% of R's fit
+/// genes; `exp(m) - 1` reproduces 99.73% and selects 100%.
+///
+/// GPL-port change derived from upstream commit
+/// 49e35b5aeb76a602910207cbfde1561093340be3, `src/utils.cpp`
+/// `row_gmean_dgcmatrix`.
+#[inline]
+fn log10_geometric_mean(log_total: f64, n_cells: usize) -> f64 {
+    let geometric_mean = (log_total / n_cells as f64).exp() - 1.0;
+    geometric_mean.max(1e-30).log10()
+}
+
 /// Current SCTransform regularization works on the overdispersion factor
 /// `1 + mean/theta`, on a log10 scale, rather than directly on log10(theta).
 #[inline]
@@ -1165,7 +1192,7 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
             cell_totals[cell as usize] += count;
             total += count;
             squares += count * count;
-            log_total += count.ln_1p();
+            log_total += (count + 1.0).ln();
         }
         gene_totals[gene] = total;
         let mean = total / n_cells as f64;
@@ -1175,7 +1202,7 @@ pub fn sctransform(data: &GeneColumns, options: &SctOptions) -> SctResult {
         // Poisson-like, incorrectly removing rare but overdispersed genes from
         // the step-one sampling population.
         poisson_like[gene] = variance <= mean;
-        log_means[gene] = (log_total / n_cells as f64).exp_m1().max(1e-30).log10();
+        log_means[gene] = log10_geometric_mean(log_total, n_cells);
     }
     let grand_total: f64 = gene_totals.iter().sum::<f64>().max(1e-12);
     let min_variance = (nonzero_umi_median(&data.counts) / 5.0).powi(2);
@@ -1624,6 +1651,51 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The geometric mean must use `exp(m) - 1`, not `expm1(m)`.
+    ///
+    /// This test exists because the wrong version looks better. `expm1` is the
+    /// numerically superior choice on its own terms, a reviewer would be right
+    /// to suggest it, and nothing else in this crate would notice the change --
+    /// every other test here passes with either form. What it costs is fit-gene
+    /// agreement with R: 100% becomes 91.55%, because these last bits steer a
+    /// sequential sample without replacement.
+    ///
+    /// The expectations are R's values for the same inputs, so the assertion
+    /// fails on any silent switch back.
+    #[test]
+    fn geometric_mean_uses_the_upstream_inaccurate_form() {
+        // One gene detected in five of ten thousand cells, count 1 each.
+        let n_cells = 10_000;
+        let log_total = 5.0 * 2.0f64.ln();
+        let m = log_total / n_cells as f64;
+
+        // The two forms genuinely disagree at this scale; if they ever stop
+        // disagreeing this test proves nothing and should be revisited.
+        assert_ne!(
+            m.exp() - 1.0,
+            m.exp_m1(),
+            "the two forms agree here, so this test no longer guards anything"
+        );
+
+        assert_eq!(
+            log10_geometric_mean(log_total, n_cells),
+            -3.460_129_274_946_374,
+            "expected R's exp(m) - 1 result; expm1 would give {}",
+            m.exp_m1().log10()
+        );
+
+        // A second case with mixed counts, to catch a change that happens to
+        // land on the right answer for the uniform one.
+        let log_total: f64 = [1.0f64, 2.0, 3.0, 4.0, 5.0]
+            .iter()
+            .map(|count| (count + 1.0).ln())
+            .sum();
+        assert_eq!(
+            log10_geometric_mean(log_total, n_cells),
+            -3.181_680_656_395_853_7
+        );
+    }
 
     #[test]
     fn digamma_matches_known_values() {
