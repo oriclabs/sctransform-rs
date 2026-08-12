@@ -305,58 +305,55 @@ oracle SD 0.648%, slope 0.999624, Pearson 0.99998, worst per-gene correlation
 Recalibrating it is a judgement call rather than a fix, so it is left failing
 and documented rather than quietly adjusted.
 
-### Still open: 21 genes, cause not yet found
+### Still open: 21 genes, and a fixture that could not see them
 
 R reports an infinite theta for 241 step-one genes and this port for 220. The
 21 differences all sit between theta 1e5 and 1e7 -- genes with no real
 overdispersion, where R's estimator returns exactly zero and this one finds a
 very large finite value.
 
-The estimator is not the cause, and neither is the beta stage. Both were
-measured against glmGamPoi on 300 genes spanning the expression range:
+**The earlier claim that "given identical inputs the two implementations
+classify every gene identically" was overstated.** It rested on
+`export_overdispersion_fixture.R` reporting zero regime disagreements over 300
+genes. Those 300 are sampled evenly across the expression range of all 13,799
+modelled genes, but the step-one set is a density-weighted subsample of 2,000 --
+and only **40 of the 300 fixture genes are step-one genes at all**. None of the
+21 is among them. The fixture reported no disagreements because it never tested
+the population that disagrees.
+
+What the fixture does still establish, on the genes it covers:
 
 | | |
 |---|---:|
-| Beta-stage intercept, median relative error | **0.000e0** (bit-identical) |
+| Beta-stage intercept, median relative error | 0.000e0 (bit-identical) |
 | Beta-stage intercept, max relative error | 2.6e-16 |
-| Genes whose overdispersion regime disagrees | **0 of 300** |
+| Estimator, median relative theta error | 1.2e-10 |
+| Worst relative objective gap | 7.1e-12 |
 
-Given identical inputs the two implementations classify every gene identically.
-So the difference is in what the pipeline feeds them, which differs from the
-fixture in one way: the pipeline fits on a 5,000-cell subsample.
+Two candidate causes were implemented and both proved inert. Neither moved any
+measured quantity, and the mismatch count stayed at exactly 21:
 
-One candidate was tested and ruled out. `fit_glmGamPoi_offset` computes its
-offset as `log(10^log10_umi)`, a round trip through base 10 that is not an
-identity in floating point -- it changes 3,847 of 14,847 cell offsets, 25.9%,
-moving mu by up to 1.8e-15. Since these genes are classified by the sign of a
-cancellation between two quantities each of size `sum(y)`, that looked like
-enough to flip them. The port now performs the same round trip, because it is
-what upstream computes, and it changed nothing: still 21, with no measured
-quantity moving at all.
+- **The base-10 offset round trip.** `fit_glmGamPoi_offset` computes its offset
+  as `log(10^log10_umi)`, which is not an identity in floating point -- it
+  changes 3,847 of 14,847 cell offsets, 25.9%, moving mu by up to 1.8e-15.
+- **The moment estimator's three ULP-level details**: the mean taken over
+  `exp(offset)` rather than raw column sums, R's two-pass `rowVars` rather than
+  the algebraically equal one-pass form, and `xim * bm` as a reciprocal times a
+  value rather than a division.
 
-The next candidate is `estimate_dispersions_by_moment`, which calls R's
-`rowVars`. R computes the variance in two passes; this port uses the
-algebraically equivalent one-pass form. That value is not merely a starting
-point -- the negative-binomial intercept depends on the dispersion held fixed
-during its Newton iteration, so a different moment estimate gives a genuinely
-different beta and mu.
+Both are retained, because they are what upstream computes and there is no
+reason to compute something else, but neither is credited with a benefit it did
+not deliver.
+
+The next step is not another guess. It is to rebuild the fixture over the
+**step-one gene set and the 5,000-cell subsample the pipeline actually fits on**,
+so the failing genes are inside its coverage, and then read the far-left score
+at `overdispersion = 1e-8` directly for one of them. That score is a
+cancellation between two quantities each of size `sum(y)`; whichever term
+differs will be visible once the fixture can see the gene.
 
 ### Where this leaves the port
 
 Residual error is 0.648% of the oracle's SD, from 1.476% at the start. One gate
-fails and it is the miscalibrated ratio described above. Whatever remains is
-below the level at which the current probes can attribute it, and the 21 genes
-are the only concrete unexplained difference left.
-
-### Licensing, which changed under us
-
-glmGamPoi relicensed GPL-3 to MIT on 26 May 2026 (`a9eeed642`), and the four
-C++ files are byte-identical across that change. That would put the estimator
-within reach of MIT BioLang -- except that `src/overdispersion.cpp` still
-carries an in-file notice marking it LGPL (>= 3) and attributing it to DESeq2,
-and the relicensing commit did not touch it. This port treats that file as
-LGPL-3 and conveys it under GPL-3, which LGPL-3 section 2 permits.
-`beta_estimation.cpp` carries no such notice and is MIT at HEAD.
-
-Residual generation, clipping, residual variance and feature ranking need no
-work: they already pass every gate they are measured against.
+fails and it is the miscalibrated ratio described above. The 21 genes are the
+only concrete unexplained difference left, and they are 1% of the fit set.

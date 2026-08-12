@@ -286,31 +286,6 @@ pub fn fit_offset_model(counts: &[(usize, f64)], cell_totals: &[f64]) -> OffsetF
         };
     }
 
-    // `estimate_dispersions_by_moment`: (rowVars(Y) - bm/mean(colSums)) / bm^2,
-    // negatives and NaNs floored to zero by `estimate_dispersions_roughly`.
-    let mut sum = 0.0;
-    let mut sum_squares = 0.0;
-    for &(_, count) in counts {
-        sum += count;
-        sum_squares += count * count;
-    }
-    let cells = n_cells as f64;
-    let bm = sum / cells;
-    let bv = if n_cells > 1 {
-        (sum_squares - cells * bm * bm) / (cells - 1.0)
-    } else {
-        0.0
-    };
-    let mean_total = cell_totals.iter().sum::<f64>() / cells;
-    let moment = (bv - bm / mean_total) / (bm * bm);
-    let dispersion_init = if moment.is_finite() && moment > 0.0 {
-        moment
-    } else {
-        0.0
-    };
-
-    // `estimate_betas_roughly_group_wise`: log(mean(Y / exp(offset))).
-    //
     // The offset is `log(10^log10(total))`, not `log(total)`. That round trip
     // is upstream's: `make_cell_attr` stores `log_umi` as a base-10 logarithm
     // and `fit_glmGamPoi_offset` converts it back with
@@ -323,11 +298,52 @@ pub fn fit_offset_model(counts: &[(usize, f64)], cell_totals: &[f64]) -> OffsetF
     // reports an infinite theta and this port reports a large finite one --
     // those are decided by a sign test on a cancellation, so a 1e-15 shift in
     // mu could plausibly flip them. It does not: the count stayed at 21 and no
-    // measured quantity moved at all. The cause is still open.
+    // measured quantity moved at all.
     let offsets: Vec<f64> = cell_totals
         .iter()
         .map(|total| 10f64.powf(total.log10()).ln())
         .collect();
+
+    // `estimate_dispersions_by_moment`: `(rowVars(Y) - xim * bm) / bm^2` with
+    // `xim = 1 / mean(colMeans2(exp(offset_matrix)))`, negatives and NaNs
+    // floored to zero by `estimate_dispersions_roughly`.
+    //
+    // Three details here are each worth about a unit in the last place, and
+    // this value is not merely a starting point: the intercept's Newton
+    // iteration holds the dispersion fixed, so a different moment estimate
+    // gives a genuinely different beta and mu.
+    //
+    // The mean is over `exp(offset)`, which is the base-10 round trip again
+    // rather than the raw column sum. The variance is R's two-pass form, not
+    // the algebraically equal `(sum(y^2) - n*mean^2) / (n - 1)`. And `xim * bm`
+    // is a reciprocal followed by a multiplication, not a division.
+    let mut sum = 0.0;
+    for &(_, count) in counts {
+        sum += count;
+    }
+    let cells = n_cells as f64;
+    let bm = sum / cells;
+    let bv = if n_cells > 1 {
+        let mut deviations = 0.0;
+        for &(_, count) in counts {
+            deviations += (count - bm) * (count - bm);
+        }
+        // The zero cells contribute `mean^2` apiece.
+        deviations += (n_cells - counts.len()) as f64 * bm * bm;
+        deviations / (cells - 1.0)
+    } else {
+        0.0
+    };
+    let mean_exp_offset = offsets.iter().map(|offset| offset.exp()).sum::<f64>() / cells;
+    let xim = 1.0 / mean_exp_offset;
+    let moment = (bv - xim * bm) / (bm * bm);
+    let dispersion_init = if moment.is_finite() && moment > 0.0 {
+        moment
+    } else {
+        0.0
+    };
+
+    // `estimate_betas_roughly_group_wise`: log(mean(Y / exp(offset))).
     let normalised: f64 = counts
         .iter()
         .map(|&(cell, count)| count / cell_totals[cell])
